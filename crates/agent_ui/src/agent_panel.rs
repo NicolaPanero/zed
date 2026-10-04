@@ -1939,7 +1939,8 @@ impl AgentPanel {
             return;
         }
 
-        let agent = Agent::with_account(action.agent.clone(), action.account.clone());
+        let account = AccountRegistry::resolve(action.agent.as_ref(), action.account.clone(), cx);
+        let agent = Agent::with_account(action.agent.clone(), account);
         self.selected_agent = self.agent_with_quota_left(agent, cx);
         self.activate_new_thread(true, AgentThreadSource::AgentPanel, window, cx);
     }
@@ -6078,7 +6079,7 @@ impl AgentPanel {
                                                 account_label_with_quota(&account, cx)
                                             )
                                             .into();
-                                            (item, account.id(), label)
+                                            (item, Some(account.selection()), label)
                                         })
                                         .collect::<Vec<_>>()
                                 } else {
@@ -6106,7 +6107,9 @@ impl AgentPanel {
                                         !showing_terminal
                                             && is_agent_selected(Agent::Custom {
                                                 id: item.id.clone(),
-                                                account: account.clone(),
+                                                account: account
+                                                    .clone()
+                                                    .filter(|account| !account.is_system()),
                                             }),
                                         |this| this.action(Box::new(NewThread)),
                                     )
