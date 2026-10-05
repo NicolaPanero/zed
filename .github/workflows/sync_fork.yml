@@ -1,4 +1,4 @@
-# Keeps this fork's main in step with zed-industries/zed. A failed run makes
+# Keeps this fork's main and v1.22.x in step with zed-industries/zed. A failed run makes
 # GitHub email the account that owns this workflow.
 #
 # GitHub's built-in token may not change files under .github/workflows, which
@@ -26,13 +26,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Merge upstream main into main
+      - name: Merge upstream branches
         env:
           GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN || github.token }}
         run: |
-          gh api --method POST "repos/${GITHUB_REPOSITORY}/merge-upstream" \
-            -f branch=main \
-            --jq '"\(.merge_type): \(.message)"'
+          failed=0
+          for branch in main v1.22.x; do
+            echo "::group::$branch"
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/merge-upstream" \
+              -f branch="$branch" \
+              --jq '"\(.merge_type): \(.message)"' || failed=1
+            echo "::endgroup::"
+          done
+          exit "$failed"
 
       # Upstream's own workflows would run here too (and fail without its
       # secrets), including ones added later, so keep them switched off.
