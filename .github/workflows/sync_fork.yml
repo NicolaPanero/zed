@@ -1,0 +1,47 @@
+# Keeps this fork's main in step with zed-industries/zed. A failed run makes
+# GitHub email the account that owns this workflow.
+#
+# GitHub's built-in token may not change files under .github/workflows, which
+# upstream edits often; a FORK_SYNC_TOKEN secret (fine-grained token with
+# Contents and Workflows write access to this repository) lifts that limit.
+
+name: Sync fork with upstream
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: sync-fork
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'NicolaPanero/zed'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Merge upstream main into main
+        env:
+          GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN || github.token }}
+        run: |
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/merge-upstream" \
+            -f branch=main \
+            --jq '"\(.merge_type): \(.message)"'
+
+      # Upstream's own workflows would run here too (and fail without its
+      # secrets), including ones added later, so keep them switched off.
+      - name: Keep upstream workflows disabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow list --repo "$GITHUB_REPOSITORY" --all --json path,state \
+            --jq '.[] | select(.state == "active" and .path != ".github/workflows/sync_fork.yml") | .path' |
+          while read -r path; do
+            gh workflow disable "$(basename "$path")" --repo "$GITHUB_REPOSITORY"
+          done
