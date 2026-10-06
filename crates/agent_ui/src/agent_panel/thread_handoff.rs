@@ -16,9 +16,12 @@ use agent_accounts::{
 use agent_client_protocol::schema::v1 as acp;
 use chrono::Utc;
 use futures::FutureExt as _;
-use gpui::{App, Context, Entity, SharedString, TaskExt as _, Window};
+use gpui::{Action, App, Context, Entity, SharedString, TaskExt as _, WeakEntity, Window};
 use project::{AgentId, Project};
-use workspace::{PathList, Toast, notifications::NotificationId};
+use schemars::JsonSchema;
+use serde::Deserialize;
+use ui::{Color, ContextMenu, ContextMenuEntry, FluentBuilder as _, IconName};
+use workspace::{PathList, Toast, Workspace, notifications::NotificationId};
 
 use super::AgentPanel;
 use crate::account_registry::{
@@ -490,4 +493,279 @@ pub(crate) fn handoff_targets(
     });
     targets.sort_by_key(|(_, label)| label.to_lowercase());
     targets
+}
+
+// ---------------------------------------------------------------------------
+// Panel integration. `agent_panel.rs` stays as upstream wrote it apart from
+// one-line calls into what follows, so syncing with Zed rarely conflicts.
+
+/// Continues the active thread in a new thread with another agent or another
+/// account, carrying the conversation over.
+#[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]
+#[action(namespace = agent)]
+#[serde(deny_unknown_fields)]
+pub struct ContinueThreadWith {
+    /// The agent id to continue with.
+    pub agent: AgentId,
+    /// The provider account to continue with; omitted for the default account.
+    #[serde(default)]
+    pub account: Option<AccountId>,
+}
+
+/// Creates a new thread with an external agent and one of its accounts.
+#[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]
+#[action(namespace = agent)]
+#[serde(deny_unknown_fields)]
+pub struct NewThreadWithAccount {
+    /// The agent id to use for the conversation.
+    pub agent: AgentId,
+    /// The provider account, as the path of its home directory; omitted for
+    /// the agent's default account.
+    #[serde(default)]
+    pub account: Option<AccountId>,
+}
+
+pub(crate) fn register(workspace: &mut Workspace) {
+    crate::add_account_modal::register(workspace);
+    workspace
+        .register_action(|workspace, action: &ContinueThreadWith, window, cx| {
+            if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                panel.update(cx, |panel, cx| {
+                    panel.continue_thread_with(
+                        action.agent.clone(),
+                        action.account.clone(),
+                        window,
+                        cx,
+                    )
+                });
+                workspace.focus_panel::<AgentPanel>(window, cx);
+            }
+        })
+        .register_action(|workspace, action: &NewThreadWithAccount, window, cx| {
+            if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                workspace.focus_panel::<AgentPanel>(window, cx);
+                panel.update(cx, |panel, cx| {
+                    panel.new_thread_with_account(action, window, cx)
+                });
+            }
+        });
+}
+
+impl AgentPanel {
+    fn new_thread_with_account(
+        &mut self,
+        action: &NewThreadWithAccount,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.has_open_project(cx) {
+            return;
+        }
+        let account = AccountRegistry::resolve(action.agent.as_ref(), action.account.clone(), cx);
+        let agent = Agent::with_account(action.agent.clone(), account);
+        self.selected_agent = self.agent_with_quota_left(agent, cx);
+        self.activate_new_thread(true, AgentThreadSource::AgentPanel, window, cx);
+    }
+
+    /// The agent a thread started without picking an account runs with: the
+    /// configured default account, or another one if that is out of quota.
+    pub(super) fn agent_for_new_thread(&self, agent: Agent, cx: &mut Context<Self>) -> Agent {
+        let agent = match agent {
+            Agent::Custom { id } => {
+                let account = AccountRegistry::resolve(id.as_ref(), None, cx);
+                Agent::with_account(id, account)
+            }
+            agent => agent,
+        };
+        self.agent_with_quota_left(agent, cx)
+    }
+
+    /// The account environment for the terminal being spawned.
+    pub(super) fn pending_terminal_account_env(
+        &self,
+        cx: &App,
+    ) -> collections::HashMap<String, String> {
+        self.pending_terminal_spawn
+            .as_ref()
+            .and_then(|terminal_id| {
+                thread_accounts::terminal_account(&terminal_id.to_key_string(), cx)
+            })
+            .map(|account| account.env())
+            .unwrap_or_default()
+    }
+
+    pub(super) fn handoff_targets_for_menu(
+        &self,
+        has_thread_messages: bool,
+        cx: &App,
+    ) -> Vec<(Agent, SharedString)> {
+        if has_thread_messages {
+            self.handoff_targets(cx)
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+/// The options menu's "Continue with…" submenu.
+pub(super) fn continue_with_submenu(
+    menu: ContextMenu,
+    targets: &[(Agent, SharedString)],
+) -> ContextMenu {
+    if targets.is_empty() {
+        return menu;
+    }
+    let targets = targets.to_vec();
+    menu.submenu("Continue with…", move |mut menu, _, _| {
+        for (target, label) in &targets {
+            menu = menu.action(
+                label.clone(),
+                Box::new(ContinueThreadWith {
+                    agent: target.id(),
+                    // Explicit, so the CLI's own home stays pickable while
+                    // another account is the default.
+                    account: Some(target.account().cloned().unwrap_or_else(AccountId::system)),
+                }),
+            );
+        }
+        menu
+    })
+}
+
+/// The new-thread button's label, with the selected agent's account.
+pub(super) fn label_with_account(label: SharedString, agent: &Agent, cx: &App) -> SharedString {
+    match agent.account() {
+        Some(account) => format!(
+            "{label} · {}",
+            AccountRegistry::label(agent.id().as_ref(), Some(account), cx)
+        )
+        .into(),
+        None => label,
+    }
+}
+
+/// The new-thread menu's accounts section: a thread entry per account of
+/// agents with several, terminals per non-default account, and "Add Account".
+pub(super) fn account_menu_entries(
+    mut menu: ContextMenu,
+    workspace: &WeakEntity<Workspace>,
+    agent_server_store: &Entity<project::AgentServerStore>,
+    is_via_collab: bool,
+    cx: &mut App,
+) -> ContextMenu {
+    let is_local_project = workspace
+        .upgrade()
+        .is_some_and(|workspace| workspace.read(cx).project().read(cx).is_local());
+    if !is_local_project {
+        return menu;
+    }
+    let store = agent_server_store.read(cx);
+    let registry_store = project::AgentRegistryStore::try_global(cx);
+    let mut agents: Vec<(AgentId, SharedString, Option<SharedString>)> = store
+        .external_agents()
+        .filter(|agent_id| AccountProvider::for_agent(agent_id.as_ref()).is_some())
+        .map(|agent_id| {
+            let registry_agent = registry_store
+                .as_ref()
+                .and_then(|registry| registry.read(cx).agent(agent_id));
+            let name = store
+                .agent_display_name(agent_id)
+                .or_else(|| registry_agent.map(|agent| agent.name().clone()))
+                .unwrap_or_else(|| agent_id.0.clone());
+            let icon = store
+                .agent_icon(agent_id)
+                .or_else(|| registry_agent.and_then(|agent| agent.icon_path().cloned()));
+            (agent_id.clone(), name, icon)
+        })
+        .collect();
+    agents.sort_by_key(|(_, name, _)| name.to_lowercase());
+
+    let mut has_header = false;
+    for (agent_id, name, icon) in &agents {
+        let accounts = AccountRegistry::accounts_for_agent(agent_id.as_ref(), cx);
+        if accounts.len() < 2 {
+            continue;
+        }
+        if !has_header {
+            menu = menu.separator().header("Accounts");
+            has_header = true;
+        }
+        for account in accounts {
+            let label = format!("{name} · {}", account_label_with_quota(&account, cx));
+            let action = NewThreadWithAccount {
+                agent: agent_id.clone(),
+                account: Some(account.selection()),
+            };
+            let entry = ContextMenuEntry::new(label)
+                .when_some(icon.clone(), |entry, icon| entry.custom_icon_svg(icon))
+                .when(icon.is_none(), |entry| entry.icon(IconName::Sparkle))
+                .icon_color(Color::Muted)
+                .disabled(is_via_collab)
+                .handler(move |window, cx| window.dispatch_action(Box::new(action.clone()), cx));
+            menu = menu.item(entry);
+        }
+    }
+
+    for provider in AccountProvider::ALL {
+        let agent_id = provider.agent_id();
+        for account in AccountRegistry::accounts_for_agent(agent_id, cx) {
+            let Some(account_id) = account.id() else {
+                continue;
+            };
+            if !has_header {
+                menu = menu.separator().header("Accounts");
+                has_header = true;
+            }
+            let workspace = workspace.clone();
+            menu = menu.item(
+                ContextMenuEntry::new(format!(
+                    "Terminal · {} · {}",
+                    provider.display_name(),
+                    account.label()
+                ))
+                .icon(IconName::Terminal)
+                .icon_color(Color::Muted)
+                .disabled(is_via_collab)
+                .handler(move |window, cx| {
+                    let Some(workspace) = workspace.upgrade() else {
+                        return;
+                    };
+                    let account_id = account_id.clone();
+                    workspace.update(cx, |workspace, cx| {
+                        if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                            panel.update(cx, |panel, cx| {
+                                panel.new_terminal_with_account(
+                                    Some(workspace),
+                                    agent_id.into(),
+                                    account_id,
+                                    window,
+                                    cx,
+                                );
+                            });
+                        }
+                    });
+                }),
+            );
+        }
+    }
+
+    if agents.is_empty() {
+        return menu;
+    }
+    let targets: Vec<(AgentId, SharedString)> = agents
+        .into_iter()
+        .map(|(agent_id, name, _)| (agent_id, name))
+        .collect();
+    menu.separator()
+        .submenu("Add Account", move |mut menu, _, _| {
+            for (agent_id, name) in &targets {
+                menu = menu.action(
+                    name.clone(),
+                    Box::new(crate::add_account_modal::AddAgentAccount {
+                        agent: agent_id.clone(),
+                    }),
+                );
+            }
+            menu
+        })
 }

@@ -54,7 +54,7 @@ impl Global for RecentWrites {}
 pub fn handoff_label(thread_id: ThreadId, cx: &App) -> Option<SharedString> {
     let source = read(thread_id, cx)?.handoff_from?;
     let agent = Agent::with_account(source.agent_id, source.account);
-    Some(crate::agent_panel::handoff_target_label(&agent, cx).into())
+    Some(crate::agent_panel::thread_handoff::target_label(&agent, cx).into())
 }
 
 pub fn read(thread_id: ThreadId, cx: &App) -> Option<ThreadAccountInfo> {
@@ -108,11 +108,41 @@ pub fn record_account(thread_id: ThreadId, account: Option<AccountId>, cx: &mut 
 /// an agent that does not name one.
 pub fn agent_for_thread(agent: Agent, thread_id: ThreadId, cx: &App) -> Agent {
     match agent {
-        Agent::Custom { id, account: None } => {
+        Agent::Custom { id } => {
             let account = read(thread_id, cx).and_then(|info| info.account);
-            Agent::Custom { id, account }
+            Agent::with_account(id, account)
         }
         agent => agent,
+    }
+}
+
+/// The agent a thread being opened runs with: a persisted thread reopens with
+/// the account whose store holds its session.
+pub(crate) fn agent_for_resume(agent: Agent, thread_id: Option<ThreadId>, cx: &App) -> Agent {
+    match thread_id {
+        Some(thread_id) => agent_for_thread(agent, thread_id, cx),
+        None => agent,
+    }
+}
+
+impl Agent {
+    /// An external agent run with the given account; `None` (or the CLI's
+    /// own home picked explicitly) is its default account.
+    pub fn with_account(id: AgentId, account: Option<AccountId>) -> Self {
+        match (Self::from(id), account) {
+            (Self::Custom { id }, Some(account)) if !account.is_system() => {
+                Self::CustomAccount { id, account }
+            }
+            (agent, _) => agent,
+        }
+    }
+
+    /// The non-default account the agent runs with.
+    pub fn account(&self) -> Option<&AccountId> {
+        match self {
+            Self::CustomAccount { account, .. } => Some(account),
+            _ => None,
+        }
     }
 }
 
@@ -211,9 +241,9 @@ mod tests {
             );
             assert_eq!(
                 agent_for_thread(Agent::from(AgentId::new("claude-acp")), thread_id, cx),
-                Agent::Custom {
+                Agent::CustomAccount {
                     id: AgentId::new("claude-acp"),
-                    account: Some(account.clone()),
+                    account: account.clone(),
                 }
             );
             // An explicitly chosen account is kept.
@@ -293,5 +323,32 @@ mod tests {
             );
             assert_eq!(terminal_account("terminal-2", cx), None);
         });
+    }
+
+    #[test]
+    fn agent_account_serialization() {
+        let agent = Agent::with_account(
+            AgentId::from("claude-acp"),
+            Some(AccountId::from("/Users/me/.claude-work")),
+        );
+        let json = serde_json::to_string(&agent).unwrap();
+        assert_eq!(
+            json,
+            r#"{"custom_account":{"name":"claude-acp","account":"/Users/me/.claude-work"}}"#
+        );
+        assert_eq!(serde_json::from_str::<Agent>(&json).unwrap(), agent);
+        // The default account keeps Zed's own format.
+        assert_eq!(
+            serde_json::to_string(&Agent::from(AgentId::from("claude-acp"))).unwrap(),
+            r#"{"custom":{"name":"claude-acp"}}"#
+        );
+        assert_eq!(
+            Agent::with_account(AgentId::from("claude-acp"), Some(AccountId::system())),
+            Agent::from(AgentId::from("claude-acp"))
+        );
+        assert_eq!(
+            Agent::with_account(agent::ZED_AGENT_ID.clone(), Some(AccountId::from("/x"))),
+            Agent::NativeAgent
+        );
     }
 }

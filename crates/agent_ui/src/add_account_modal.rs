@@ -11,7 +11,16 @@ use settings::{AgentAccountSettingsContent, update_settings_file};
 use ui::{Label, LabelSize, prelude::*};
 use workspace::{ModalView, Workspace};
 
-use crate::{AddAgentAccount, NewExternalAgentThread};
+use crate::agent_panel::thread_handoff::NewThreadWithAccount;
+
+/// Adds a login profile for an agent and opens a thread to sign in with it.
+#[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, gpui::Action)]
+#[action(namespace = agent)]
+#[serde(deny_unknown_fields)]
+pub struct AddAgentAccount {
+    /// The agent to add an account for.
+    pub agent: AgentId,
+}
 
 pub struct AddAccountModal {
     agent_id: AgentId,
@@ -96,7 +105,7 @@ impl AddAccountModal {
         });
 
         window.dispatch_action(
-            Box::new(NewExternalAgentThread {
+            Box::new(NewThreadWithAccount {
                 agent: self.agent_id.clone(),
                 account: Some(AccountId::new(&home)),
             }),

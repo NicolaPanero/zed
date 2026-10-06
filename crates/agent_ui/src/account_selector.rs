@@ -1,6 +1,7 @@
 //! The account picker shown next to the mode and model selectors.
 
-use gpui::{AnyElement, App, Entity};
+use acp_thread::AcpThread;
+use gpui::{AnyElement, App, Entity, WeakEntity};
 use project::Project;
 use ui::{
     Button, Callout, CalloutBorderPosition, ContextMenu, ContextMenuEntry, PopoverMenu, Severity,
@@ -10,9 +11,12 @@ use ui::{
 use crate::account_registry::{
     AccountRegistry, AgentAccountsSettings, QuotaRegistry, account_label_with_quota,
 };
+use crate::add_account_modal::AddAgentAccount;
+use crate::agent_panel::thread_handoff::{ContinueThreadWith, NewThreadWithAccount};
+use crate::conversation_view::ThreadError;
 use crate::thread_accounts;
 use crate::thread_metadata_store::ThreadId;
-use crate::{AddAgentAccount, Agent, ContinueThreadWith, NewExternalAgentThread};
+use crate::{Agent, ConversationView};
 use settings::Settings as _;
 
 /// Renders the picker when the thread's agent has more than one account.
@@ -80,7 +84,7 @@ pub(crate) fn render_account_selector(
                                 account: account_id.clone(),
                             })
                         } else {
-                            Box::new(NewExternalAgentThread {
+                            Box::new(NewThreadWithAccount {
                                 agent: agent_id.clone(),
                                 account: account_id.clone(),
                             })
@@ -113,7 +117,7 @@ pub(crate) fn render_account_selector(
 pub(crate) fn render_handoff_notice(thread_id: ThreadId, cx: &App) -> Option<AnyElement> {
     let source = thread_accounts::read(thread_id, cx)?.handoff_from?;
     let source_agent = Agent::with_account(source.agent_id, source.account);
-    let label = crate::agent_panel::handoff_target_label(&source_agent, cx);
+    let label = crate::agent_panel::thread_handoff::target_label(&source_agent, cx);
     Some(
         Callout::new()
             .border_position(CalloutBorderPosition::Bottom)
@@ -164,7 +168,7 @@ pub(crate) fn render_quota_notice(
             account: Some(alternative.selection()),
         })
     } else {
-        Box::new(NewExternalAgentThread {
+        Box::new(NewThreadWithAccount {
             agent: agent_id,
             account: Some(alternative.selection()),
         })
@@ -205,7 +209,7 @@ pub(crate) fn render_usage_limit_notice(
         .is_local()
         .then(|| QuotaRegistry::any_alternative(agent_id.as_ref(), agent.account(), cx))
         .flatten();
-    let targets = crate::agent_panel::handoff_targets(agent, project, cx);
+    let targets = crate::agent_panel::thread_handoff::handoff_targets(agent, project, cx);
 
     let mut actions = h_flex().gap_1();
     if let Some(alternative) = &alternative {
@@ -235,14 +239,16 @@ pub(crate) fn render_usage_limit_notice(
                     let targets = targets.clone();
                     Some(ContextMenu::build(window, cx, move |mut menu, _, _| {
                         for (target, label) in &targets {
-                            let Agent::Custom { id, account } = target else {
-                                continue;
-                            };
                             menu = menu.action(
                                 label.clone(),
                                 Box::new(ContinueThreadWith {
-                                    agent: id.clone(),
-                                    account: account.clone(),
+                                    agent: target.id(),
+                                    account: Some(
+                                        target
+                                            .account()
+                                            .cloned()
+                                            .unwrap_or_else(agent_accounts::AccountId::system),
+                                    ),
                                 }),
                             );
                         }
@@ -263,4 +269,80 @@ pub(crate) fn render_usage_limit_notice(
         )
         .actions_slot(actions)
         .into_any_element()
+}
+
+/// Whether the agent says its account ran out of quota or credits.
+pub(crate) fn is_usage_limit(error: &ThreadError) -> bool {
+    match error {
+        ThreadError::Other { message, .. } | ThreadError::ProviderRejection { message } => {
+            agent_accounts::is_usage_limit_error(message)
+        }
+        _ => false,
+    }
+}
+
+/// Marks the thread's account exhausted when its agent reports it out of
+/// quota, so new threads avoid it until its quota is read again.
+pub(crate) fn note_thread_error(
+    error: &ThreadError,
+    server_view: &WeakEntity<ConversationView>,
+    cx: &mut App,
+) {
+    if !is_usage_limit(error) {
+        return;
+    }
+    let Some(view) = server_view.upgrade() else {
+        return;
+    };
+    let agent = view.read(cx).connection_key().clone();
+    QuotaRegistry::mark_exhausted(agent.id().as_ref(), agent.account(), cx);
+}
+
+/// The account picker for a thread's message editor.
+pub(crate) fn thread_account_selector(
+    server_view: &WeakEntity<ConversationView>,
+    thread: &Entity<AcpThread>,
+    project: &WeakEntity<Project>,
+    cx: &App,
+) -> Option<AnyElement> {
+    let view = server_view.upgrade()?;
+    render_account_selector(
+        view.read(cx).connection_key(),
+        !thread.read(cx).entries().is_empty(),
+        project
+            .upgrade()
+            .is_some_and(|project| project.read(cx).is_local()),
+        cx,
+    )
+}
+
+/// The notices shown above a thread: where it was continued from, and quota
+/// warnings for its account.
+pub(crate) fn thread_notices(
+    server_view: &WeakEntity<ConversationView>,
+    thread: &Entity<AcpThread>,
+    project: &WeakEntity<Project>,
+    thread_error: Option<&ThreadError>,
+    cx: &mut App,
+) -> Vec<AnyElement> {
+    let Some(view) = server_view.upgrade() else {
+        return Vec::new();
+    };
+    let (agent, thread_id) = {
+        let view = view.read(cx);
+        (view.connection_key().clone(), view.thread_id)
+    };
+    let mut notices: Vec<AnyElement> = render_handoff_notice(thread_id, cx).into_iter().collect();
+    if thread_error.is_some_and(is_usage_limit) {
+        if let Some(project) = project.upgrade() {
+            notices.push(render_usage_limit_notice(&agent, &project, cx));
+        }
+    } else {
+        let has_messages = !thread.read(cx).entries().is_empty();
+        let is_local = project
+            .upgrade()
+            .is_some_and(|project| project.read(cx).is_local());
+        notices.extend(render_quota_notice(&agent, has_messages, is_local, cx));
+    }
+    notices
 }
