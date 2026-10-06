@@ -427,7 +427,10 @@ impl AcpSessionList {
 
     fn send_info_update(&self, session_id: acp::SessionId, update: acp::SessionInfoUpdate) {
         self.updates_tx
-            .try_send(acp_thread::SessionListUpdate::SessionInfo { session_id, update })
+            .try_send(acp_thread::SessionListUpdate::SessionInfo {
+                session_id,
+                update: acp_thread::session_info_update_from_v1(update),
+            })
             .log_err();
     }
 }
@@ -1876,11 +1879,19 @@ impl AgentConnection for AcpConnection {
         })
     }
 
+    fn validate_prompt_content(&self, content: &[acp_v2::ContentBlock]) -> Result<()> {
+        acp_thread::content::validate_prompt_content_for_v1(content)
+    }
+
     fn prompt(
         &self,
-        params: acp::PromptRequest,
+        params: acp_v2::PromptRequest,
         cx: &mut App,
     ) -> Task<Result<acp::PromptResponse>> {
+        let params = match acp_thread::content::prompt_to_v1(params) {
+            Ok(params) => params,
+            Err(error) => return Task::ready(Err(error)),
+        };
         let conn = self.connection.clone();
         let sessions = self.sessions.clone();
         let session_id = params.session_id.clone();
@@ -2255,9 +2266,13 @@ pub mod test_support {
             self.inner.client_user_message_ids(cx)
         }
 
+        fn validate_prompt_content(&self, content: &[acp_v2::ContentBlock]) -> Result<()> {
+            self.inner.validate_prompt_content(content)
+        }
+
         fn prompt(
             &self,
-            params: acp::PromptRequest,
+            params: acp_v2::PromptRequest,
             cx: &mut App,
         ) -> Task<Result<acp::PromptResponse>> {
             self.inner.prompt(params, cx)
