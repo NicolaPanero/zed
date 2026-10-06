@@ -1,5 +1,12 @@
-# Keeps this fork's main and v1.22.x in step with zed-industries/zed. A failed run makes
-# GitHub email the account that owns this workflow.
+# Keeps this fork in step with zed-industries/zed, daily:
+#
+# - merges upstream main into main, and the upstream release branch this fork
+#   is on (its newest vX.Y.x branch) into that branch;
+# - when Zed ships a newer stable release, replays this fork's own commits
+#   onto the new upstream release branch and pushes it here.
+#
+# A failed run makes GitHub email the account that owns this workflow. A new
+# stable release fails the run on purpose, once, to send that email.
 #
 # GitHub's built-in token may not change files under .github/workflows, which
 # upstream edits often; a FORK_SYNC_TOKEN secret (fine-grained token with
@@ -20,29 +27,92 @@ concurrency:
   group: sync-fork
   cancel-in-progress: false
 
+env:
+  UPSTREAM: zed-industries/zed
+
 jobs:
   sync:
     if: github.repository == 'NicolaPanero/zed'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
+      - name: Find the release branches
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest_tag=$(gh api "repos/$UPSTREAM/releases/latest" --jq .tag_name)
+          stable=$(echo "$latest_tag" | sed -E 's/^v([0-9]+)\.([0-9]+)\..*/v\1.\2.x/')
+          current=$(gh api --paginate "repos/$GITHUB_REPOSITORY/branches?per_page=100" --jq '.[].name' |
+            grep -E '^v[0-9]+\.[0-9]+\.x$' | sort -V | tail -n 1 || true)
+          newer=false
+          if [ -n "$current" ] && [ "$(printf '%s\n%s\n' "$current" "$stable" | sort -V | tail -n 1)" != "$current" ]; then
+            newer=true
+          fi
+          echo "Zed stable: $latest_tag ($stable); this fork: ${current:-no release branch}"
+          {
+            echo "stable=$stable"
+            echo "current=$current"
+            echo "newer=$newer"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Merge upstream branches
         env:
           GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN || github.token }}
+          BRANCHES: main ${{ steps.release.outputs.current }}
         run: |
           failed=0
-          for branch in main v1.22.x; do
+          for branch in $BRANCHES; do
             echo "::group::$branch"
-            gh api --method POST "repos/${GITHUB_REPOSITORY}/merge-upstream" \
+            if ! gh api --method POST "repos/${GITHUB_REPOSITORY}/merge-upstream" \
               -f branch="$branch" \
-              --jq '"\(.merge_type): \(.message)"' || failed=1
+              --jq '"\(.merge_type): \(.message)"'; then
+              echo "::error title=Sync of $branch failed::Merging upstream $branch into this fork failed, most likely a conflict with this fork's changes."
+              failed=1
+            fi
             echo "::endgroup::"
           done
           exit "$failed"
 
+      - name: Port this fork's changes to the new stable branch
+        if: steps.release.outputs.newer == 'true'
+        env:
+          TOKEN: ${{ secrets.FORK_SYNC_TOKEN || github.token }}
+          OLD: ${{ steps.release.outputs.current }}
+          NEW: ${{ steps.release.outputs.stable }}
+        run: |
+          set -euo pipefail
+          git init -q port
+          cd port
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add fork "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git remote add upstream "https://github.com/${UPSTREAM}.git"
+          git fetch -q --no-tags --depth=500 upstream \
+            "refs/heads/$OLD:refs/remotes/upstream/$OLD" \
+            "refs/heads/$NEW:refs/remotes/upstream/$NEW"
+          git fetch -q --no-tags --depth=500 fork "refs/heads/$OLD:refs/remotes/fork/$OLD"
+
+          # The fork's own commits: on its release branch but not upstream's,
+          # without the merges that brought upstream fixes in.
+          commits=$(git rev-list --reverse --no-merges "upstream/$OLD..fork/$OLD")
+          echo "Replaying $(echo "$commits" | wc -w) commits from $OLD onto upstream $NEW:"
+          git log --no-walk=unsorted --format='  %h %s' $commits
+
+          git checkout -q -b "$NEW" "upstream/$NEW"
+          if ! git cherry-pick $commits; then
+            git status --short | sed 's/^/  /'
+            echo "::error title=Zed ${NEW%.x} is stable::Replaying this fork's changes from $OLD onto $NEW hit conflicts, so nothing was pushed. Port them by hand."
+            exit 1
+          fi
+          git push -q fork "$NEW"
+          echo "::error title=Zed ${NEW%.x} is stable::This fork's changes were replayed onto a new $NEW branch here. Build and try it before switching to it."
+          exit 1
+
       # Upstream's own workflows would run here too (and fail without its
       # secrets), including ones added later, so keep them switched off.
       - name: Keep upstream workflows disabled
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
