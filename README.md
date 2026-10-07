@@ -26,11 +26,11 @@ This is [NicolaPanero/zed](https://github.com/NicolaPanero/zed), a fork of Zed's
 ### Continue with…
 
 - The account picker under the message editor ("Continue with agent") or the agent panel's "…" → "Continue with…" moves the current conversation to another agent or account.
-- The conversation is converted with the `txcript` CLI (bundled in release builds; otherwise it must be on your `PATH`) into the target agent's own session store, then reopened there, so the agent really has the history. The original thread is left unchanged.
+- The conversation is converted with the `txcript` CLI (bundled in release builds; otherwise it must be on your `PATH`) into the target agent's own session store, then reopened there, so the agent really has the history.
 - Native transfer works for Claude Code, Codex, Grok and OpenCode. For Cursor, or if `txcript` fails, the transcript is sent as the first message of a new thread instead.
 - **Known limitation: Cursor.** Conversations to or from Cursor are not moved natively. txcript writes the session where Cursor's CLI keeps it (`~/.cursor/chats`), and `cursor-agent --resume <id>` in a terminal does pick it up. Zed, however, runs Cursor's ACP server (`cursor-agent acp`), which only reads its own `acp-sessions` store. A session copied there replays in the thread, but the model never receives it and answers without the history; Cursor most likely keeps the conversation state on its servers. So Cursor gets the transcript as the first message of a new thread: the model reads the whole conversation, but it is not a native session.
-- Threads continued this way are linked in the sidebar: the newest one shows "from Claude Code → Codex", the older ones "continued in …".
-- Continuing with an agent (or account) the conversation already ran with archives its old thread, which missed everything since: there is one thread per agent, and the archived one can be restored from the archive.
+- The conversation stays in the same thread: the panel and the sidebar entry switch to the new agent, and the sidebar shows the agents it went through ("from Claude Code → Codex"). The old agent's session is deleted from its store once the new one is written, since it would only be a stale copy.
+- With the transcript fallback the transcript is sent right away, and the old session is kept: it is the only native copy of the conversation.
 
 ### Quota and usage
 
