@@ -1,3 +1,4 @@
+mod thread_delete;
 mod thread_switcher;
 
 use acp_thread::ThreadStatus;
@@ -6549,6 +6550,18 @@ impl Sidebar {
                                 }
                             });
                         }
+
+                        let delete_sidebar = sidebar.clone();
+                        menu = menu.entry("Delete Permanently…", None, {
+                            let session_id = session_id.clone();
+                            move |window, cx| {
+                                delete_sidebar
+                                    .update(cx, |sidebar, cx| {
+                                        sidebar.delete_thread_permanently(&session_id, window, cx);
+                                    })
+                                    .ok();
+                            }
+                        });
 
                         menu.separator().entry("Archive Thread", None, {
                             let session_id = session_id.clone();

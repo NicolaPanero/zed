@@ -811,9 +811,9 @@ impl ThreadsArchiveView {
         agent: AgentId,
         cx: &mut Context<Self>,
     ) {
+        // Read before the metadata goes: the session lives in the thread's account.
+        let agent = crate::thread_accounts::agent_for_thread(Agent::from(agent), thread_id, cx);
         ThreadMetadataStore::global(cx).update(cx, |store, cx| store.delete(thread_id, cx));
-
-        let agent = Agent::from(agent);
 
         let Some(agent_connection_store) = self.agent_connection_store.upgrade() else {
             return;
