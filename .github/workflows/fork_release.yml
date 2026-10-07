@@ -2,7 +2,7 @@
 # release whenever the fork's release branch (its newest vX.Y.x branch) has a
 # commit without a release yet. It runs after each sync and on demand.
 #
-# The app is ad-hoc signed (no Apple Developer ID) and built as Zed's
+# The app bundles txcript (for "Continue with…") and is ad-hoc signed (no Apple Developer ID) and built as Zed's
 # "preview" channel under the name "Zed Fork", so it lives next to an
 # official Zed. Updates come from this repository: the app checks its
 # releases and runs script/install-fork.sh; Zed's own updater is off.
@@ -82,6 +82,9 @@ jobs:
         This build of Zed comes from github.com/NicolaPanero/zed and updates
         itself from there: it tells you when a newer build is available.
       TARGET: aarch64-apple-darwin
+      # Bundled so "Continue with…" works without installing txcript.
+      TXCRIPT_REPOSITORY: https://github.com/skillsynchq/txcript.git
+      TXCRIPT_TAG: v0.14.4
     steps:
       - uses: actions/checkout@v4
         with:
@@ -92,6 +95,14 @@ jobs:
 
       - name: Install cargo-bundle
         run: cargo install cargo-bundle --git https://github.com/zed-industries/cargo-bundle.git --branch zed-deploy --locked
+
+      - name: Build txcript
+        run: |
+          cargo install txcript-cli --git "$TXCRIPT_REPOSITORY" --tag "$TXCRIPT_TAG" \
+            --locked --root "$RUNNER_TEMP/txcript"
+          curl -fsSL "https://raw.githubusercontent.com/skillsynchq/txcript/$TXCRIPT_TAG/LICENSE" \
+            -o "$RUNNER_TEMP/txcript/LICENSE"
+          "$RUNNER_TEMP/txcript/bin/txcript" --version
 
       - name: Generate licenses
         run: script/generate-licenses
@@ -112,6 +123,8 @@ jobs:
           cd ../..
           cp crates/zed/resources/Document.icns "$app_path/Contents/Resources/Document.icns"
           cp crates/zed/contents/preview/embedded.provisionprofile "$app_path/Contents/"
+          cp "$RUNNER_TEMP/txcript/bin/txcript" "$app_path/Contents/MacOS/txcript"
+          cp "$RUNNER_TEMP/txcript/LICENSE" "$app_path/Contents/Resources/txcript-LICENSE"
           sed '/com.apple.developer.associated-domains/,+1d' crates/zed/resources/zed.entitlements \
             > "$RUNNER_TEMP/zed.entitlements"
           codesign --force --deep --entitlements "$RUNNER_TEMP/zed.entitlements" --sign - "$app_path"
