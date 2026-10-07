@@ -9,11 +9,11 @@ Welcome to Zed, a high-performance, multiplayer code editor from the creators of
 
 ## About this fork
 
-This is [NicolaPanero/zed](https://github.com/NicolaPanero/zed), a fork of Zed's stable `v1.22.x` branch that adds multi-account support and hand-off between external agents (Claude Code, Codex, Grok, Cursor). The `v1.22.x` branch here is Zed's stable branch plus these features. A daily workflow (`.github/workflows/sync_fork.yml` on `main`) merges Zed's own `main` and `v1.22.x` into this fork and emails the owner if a merge fails.
+This is [NicolaPanero/zed](https://github.com/NicolaPanero/zed), a fork of Zed's stable `v1.22.x` branch that adds multi-account support and hand-off between external agents (Claude Code, Codex, Grok, Cursor, OpenCode). The `v1.22.x` branch here is Zed's stable branch plus these features. A daily workflow (`.github/workflows/sync_fork.yml` on `main`) merges Zed's own `main` and `v1.22.x` into this fork and emails the owner if a merge fails.
 
 ### Agent accounts
 
-- **Several logins per agent.** An account is the home directory the agent CLI starts with: `CLAUDE_CONFIG_DIR` (Claude Code), `CODEX_HOME` (Codex), `GROK_HOME` (Grok), or a stand-in `HOME` with Cursor's file credential store. Each account runs in its own agent process; the CLI's own home stays the default.
+- **Several logins per agent.** An account is the home directory the agent CLI starts with: `CLAUDE_CONFIG_DIR` (Claude Code), `CODEX_HOME` (Codex), `GROK_HOME` (Grok), or a stand-in `HOME` with Cursor's file credential store. OpenCode, the official registry agent, has a single account (its `~/.local/share/opencode` data directory), since it signs in to several model providers itself. Each account runs in its own agent process; the CLI's own home stays the default.
 - **Found automatically.** Profiles such as `~/.claude-work`, `~/.codex-2`, `~/.grok-2`, `~/.cursor-work` or `~/.config/claude-*` are discovered by reading identity files only, never credentials.
 - **Where to pick them:**
   - an account picker next to the mode and model selectors;
@@ -27,17 +27,17 @@ This is [NicolaPanero/zed](https://github.com/NicolaPanero/zed), a fork of Zed's
 
 - The account picker under the message editor ("Continue with agent") or the agent panel's "…" → "Continue with…" moves the current conversation to another agent or account.
 - The conversation is converted with the `txcript` CLI (bundled in release builds; otherwise it must be on your `PATH`) into the target agent's own session store, then reopened there, so the agent really has the history. The original thread is left unchanged.
-- Native transfer works for Claude Code, Codex and Grok. For Cursor, or if `txcript` fails, the transcript is sent as the first message of a new thread instead.
+- Native transfer works for Claude Code, Codex, Grok and OpenCode. For Cursor, or if `txcript` fails, the transcript is sent as the first message of a new thread instead.
 - Threads continued this way are linked in the sidebar: the newest one shows "from Claude Code → Codex", the older ones "continued in …".
 - Continuing with an agent (or account) the conversation already ran with archives its old thread, which missed everything since: there is one thread per agent, and the archived one can be restored from the archive.
 
 ### Quota and usage
 
-- **Quota.** The account picker and menus show each account's quota (session and weekly windows for Claude and Codex, weekly for Grok), refreshed at most every 5 minutes.
+- **Quota.** The account picker and menus show each account's quota (session and weekly windows for Claude and Codex, weekly for Grok, and for OpenCode those of the Anthropic and OpenAI subscriptions it is signed in to), refreshed at most every 5 minutes.
 - **Out of quota.** When an agent reports that an account is out of quota or credits, the thread offers to continue with another account or agent.
 - **Agent Accounts & Usage page** (agent panel "…" → "Accounts & Usage", or the `agent: open agent usage` command):
   - every account with its quota windows, plan and reset times;
-  - token usage over 7, 30 or 90 days, estimated at API rates from the agents' local session logs, plus Cursor's own usage events.
+  - token usage over 7, 30 or 90 days, estimated at API rates from the agents' local session logs (OpenCode's from its database, with the cost it recorded), plus Cursor's own usage events.
 
 ### Settings
 

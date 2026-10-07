@@ -1,4 +1,4 @@
-//! Finds the Claude Code and Codex homes on this machine.
+//! Finds the agents' account homes on this machine.
 //!
 //! Ported from Superset's profile discovery: candidates are dot-dirs in the
 //! home directory (plus `~/.config/*` for Claude), never project trees. A
@@ -23,11 +23,13 @@ pub fn discover_accounts() -> Vec<AgentAccount> {
     let ambient_claude = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from);
     let ambient_codex = std::env::var_os("CODEX_HOME").map(PathBuf::from);
     let ambient_grok = std::env::var_os("GROK_HOME").map(PathBuf::from);
+    let ambient_data_home = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from);
     discover_accounts_in(
         home_dir,
         ambient_claude.as_deref(),
         ambient_codex.as_deref(),
         ambient_grok.as_deref(),
+        ambient_data_home.as_deref(),
     )
 }
 
@@ -38,6 +40,7 @@ pub fn discover_accounts_in(
     ambient_claude_dir: Option<&Path>,
     ambient_codex_home: Option<&Path>,
     ambient_grok_home: Option<&Path>,
+    ambient_data_home: Option<&Path>,
 ) -> Vec<AgentAccount> {
     let started = Instant::now();
     let mut accounts = Vec::new();
@@ -92,6 +95,22 @@ pub fn discover_accounts_in(
         home: home_dir.to_path_buf(),
         is_default: true,
     });
+    let opencode_data = ambient_data_home
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| home_dir.join(".local").join("share"))
+        .join("opencode");
+    // Only listed once OpenCode has run here, unlike the CLIs above whose
+    // default home is offered for signing in.
+    if opencode_data.is_dir() {
+        accounts.push(AgentAccount {
+            provider: AccountProvider::OpenCode,
+            home_label: tilde_label(&opencode_data, home_dir),
+            email: None,
+            name: None,
+            home: opencode_data,
+            is_default: true,
+        });
+    }
 
     let excluded_claude = [
         default_claude,
@@ -329,8 +348,9 @@ mod tests {
             r#"{"authInfo":{"email":"c@work.dev"}}"#,
         );
         fs::create_dir_all(home.join(".cursor-server")).unwrap();
+        fs::create_dir_all(home.join(".local/share/opencode")).unwrap();
 
-        let accounts = discover_accounts_in(home, None, None, None);
+        let accounts = discover_accounts_in(home, None, None, None, None);
         assert_eq!(
             summary(&accounts, home),
             vec![
@@ -343,6 +363,12 @@ mod tests {
                 (AccountProvider::Codex, "~/.codex".into(), None, true),
                 (AccountProvider::Grok, "~/.grok".into(), None, true),
                 (AccountProvider::Cursor, "~/".into(), None, true),
+                (
+                    AccountProvider::OpenCode,
+                    "~/.local/share/opencode".into(),
+                    None,
+                    true
+                ),
                 (
                     AccountProvider::Claude,
                     "~/.claude-fresh".into(),
@@ -383,7 +409,7 @@ mod tests {
         );
         assert_eq!(accounts[0].id(), None);
         assert_eq!(
-            accounts[5].id().map(|id| id.home().to_path_buf()),
+            accounts[6].id().map(|id| id.home().to_path_buf()),
             Some(home.join(".claude-work"))
         );
     }
@@ -403,6 +429,7 @@ mod tests {
             Some(&home.join(".claude-main")),
             Some(&home.join(".codex-main")),
             None,
+            Some(&home.join("data")),
         );
         assert_eq!(
             summary(&accounts, home),

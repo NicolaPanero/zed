@@ -5,6 +5,7 @@
 //! provider's token-reuse protection and sign the CLI out. A lapsed token is
 //! reported, and the CLI refreshes it the next time it runs.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -103,6 +104,7 @@ pub async fn fetch_quota(account: &AgentAccount, http: Arc<dyn HttpClient>) -> A
                 "Cursor does not report quota".into(),
             ));
         }
+        AccountProvider::OpenCode => fetch_opencode(&account.home, http).await,
     };
     result.unwrap_or_else(|error| {
         AccountQuota::with_status(QuotaStatus::Unavailable(format!("{error:#}")))
@@ -259,6 +261,14 @@ async fn fetch_claude(account: &AgentAccount, http: Arc<dyn HttpClient>) -> Resu
         }
     }
     let token = credential.access_token.clone().unwrap_or_default();
+    fetch_claude_with_token(&token, credential.subscription_type, http).await
+}
+
+async fn fetch_claude_with_token(
+    token: &str,
+    plan: Option<String>,
+    http: Arc<dyn HttpClient>,
+) -> Result<AccountQuota> {
     let request = Request::builder()
         .method(Method::GET)
         .uri(CLAUDE_USAGE_URL)
@@ -275,7 +285,7 @@ async fn fetch_claude(account: &AgentAccount, http: Arc<dyn HttpClient>) -> Resu
         )));
     }
     let windows = parse_claude_usage(&body)?;
-    Ok(finish(windows, credential.subscription_type))
+    Ok(finish(windows, plan))
 }
 
 #[derive(Deserialize)]
@@ -376,6 +386,14 @@ async fn fetch_codex(home: &Path, http: Arc<dyn HttpClient>) -> Result<AccountQu
         // API-key logins have no subscription quota.
         return Ok(AccountQuota::with_status(QuotaStatus::ApiKey));
     };
+    fetch_codex_with_token(&token, account_id, http).await
+}
+
+async fn fetch_codex_with_token(
+    token: &str,
+    account_id: Option<String>,
+    http: Arc<dyn HttpClient>,
+) -> Result<AccountQuota> {
     let mut request = Request::builder()
         .method(Method::GET)
         .uri(CODEX_USAGE_URL)
@@ -394,6 +412,96 @@ async fn fetch_codex(home: &Path, http: Arc<dyn HttpClient>) -> Result<AccountQu
     }
     let (windows, plan) = parse_codex_usage(&body, Utc::now())?;
     Ok(finish(windows, plan))
+}
+
+// -------------------------------------------------------------- OpenCode
+
+/// One provider login in OpenCode's `auth.json`.
+#[derive(Deserialize)]
+struct OpenCodeLogin {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    access: Option<String>,
+    refresh: Option<String>,
+    expires: Option<i64>,
+    #[serde(rename = "accountId")]
+    account_id: Option<String>,
+}
+
+/// OpenCode's Anthropic and OpenAI logins use the same OAuth clients as
+/// Claude Code and Codex, so the same quota endpoints answer for them. Their
+/// windows are combined, each named after its provider. Tokens are never
+/// refreshed here: OpenCode renews one on its next request to that provider.
+async fn fetch_opencode(data_dir: &Path, http: Arc<dyn HttpClient>) -> Result<AccountQuota> {
+    let Ok(auth) = std::fs::read_to_string(data_dir.join("auth.json")) else {
+        return Ok(AccountQuota::with_status(QuotaStatus::SignedOut));
+    };
+    let mut logins: HashMap<String, OpenCodeLogin> =
+        serde_json::from_str(&auth).context("parsing OpenCode's auth.json")?;
+    let now_ms = Utc::now().timestamp_millis();
+    let mut quota = AccountQuota::with_status(QuotaStatus::Unavailable(
+        "no Anthropic or OpenAI subscription signed in".into(),
+    ));
+    for (provider, label) in [("anthropic", "Anthropic"), ("openai", "OpenAI")] {
+        let Some(login) = logins.remove(provider) else {
+            continue;
+        };
+        let provider_quota = match (login.kind.as_deref(), login.access) {
+            (Some("oauth"), Some(token)) => {
+                if login.expires.is_some_and(|expires| expires <= now_ms) {
+                    let renewable = login.refresh.is_some_and(|refresh| !refresh.is_empty());
+                    AccountQuota::with_status(if renewable {
+                        QuotaStatus::TokenStale
+                    } else {
+                        QuotaStatus::TokenExpired
+                    })
+                } else {
+                    let fetched = if provider == "anthropic" {
+                        fetch_claude_with_token(&token, None, http.clone()).await
+                    } else {
+                        fetch_codex_with_token(&token, login.account_id, http.clone()).await
+                    };
+                    fetched.unwrap_or_else(|error| {
+                        AccountQuota::with_status(QuotaStatus::Unavailable(format!("{error:#}")))
+                    })
+                }
+            }
+            (Some("api"), _) => AccountQuota::with_status(QuotaStatus::ApiKey),
+            _ => continue,
+        };
+        quota = combine_opencode_quota(quota, provider_quota, label);
+    }
+    // Only other providers, such as an xAI or OpenRouter key: pay per token.
+    if !logins.is_empty() && matches!(quota.status, QuotaStatus::Unavailable(_)) {
+        quota.status = QuotaStatus::ApiKey;
+    }
+    Ok(quota)
+}
+
+/// Adds one provider's quota to the ones collected so far: windows add up,
+/// and the first provider with a usable status sets the status.
+fn combine_opencode_quota(
+    collected: AccountQuota,
+    next: AccountQuota,
+    label: &str,
+) -> AccountQuota {
+    let mut windows = collected.windows;
+    windows.extend(next.windows.into_iter().map(|window| QuotaWindow {
+        id: format!("{label}:{}", window.id),
+        label: format!("{label} {}", window.label),
+        ..window
+    }));
+    let status = match (&collected.status, &next.status) {
+        (QuotaStatus::Ok, _) => QuotaStatus::Ok,
+        (_, QuotaStatus::Ok) => QuotaStatus::Ok,
+        (QuotaStatus::Unavailable(_), status) => status.clone(),
+        (status, _) => status.clone(),
+    };
+    AccountQuota {
+        status,
+        windows,
+        plan: collected.plan.or(next.plan),
+    }
 }
 
 #[derive(Deserialize)]
@@ -779,6 +887,34 @@ fn parse_iso(value: &str) -> Option<DateTime<Utc>> {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn combines_opencode_provider_quotas() {
+        let window = |id: &str, used_percent| QuotaWindow {
+            id: id.into(),
+            label: id.into(),
+            used_percent,
+            resets_at: None,
+        };
+        let unavailable =
+            AccountQuota::with_status(QuotaStatus::Unavailable("no subscription".into()));
+        let anthropic = finish(vec![window("5h", 40)], None);
+        let combined = combine_opencode_quota(unavailable, anthropic, "Anthropic");
+        let combined = combine_opencode_quota(
+            combined,
+            AccountQuota::with_status(QuotaStatus::TokenStale),
+            "OpenAI",
+        );
+        assert_eq!(combined.status, QuotaStatus::Ok);
+        assert_eq!(combined.summary().as_deref(), Some("Anthropic 5h 40%"));
+
+        let only_key = combine_opencode_quota(
+            AccountQuota::with_status(QuotaStatus::Unavailable("none".into())),
+            AccountQuota::with_status(QuotaStatus::ApiKey),
+            "OpenAI",
+        );
+        assert_eq!(only_key.status, QuotaStatus::ApiKey);
+    }
 
     #[test]
     fn parses_claude_windows() {
