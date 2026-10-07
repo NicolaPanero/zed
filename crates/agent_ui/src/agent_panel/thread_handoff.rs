@@ -673,7 +673,10 @@ pub(super) fn account_menu_entries(
     let registry_store = project::AgentRegistryStore::try_global(cx);
     let mut agents: Vec<(AgentId, SharedString, Option<SharedString>)> = store
         .external_agents()
-        .filter(|agent_id| AccountProvider::for_agent(agent_id.as_ref()).is_some())
+        .filter(|agent_id| {
+            AccountProvider::for_agent(agent_id.as_ref())
+                .is_some_and(|provider| provider.supports_multiple_accounts())
+        })
         .map(|agent_id| {
             let registry_agent = registry_store
                 .as_ref()

@@ -2,7 +2,7 @@
 //! conversation between agents or accounts.
 //!
 //! An account is a provider home directory: `CLAUDE_CONFIG_DIR` for Claude
-//! Code, `CODEX_HOME` for Codex. Starting an agent with an account means
+//! Code, `CODEX_HOME` for Codex, OpenCode's data directory. Starting an agent with an account means
 //! starting its process with that variable set; the default account means
 //! leaving the variable alone. Credentials stay where the CLI put them and
 //! are never read here.
@@ -28,6 +28,8 @@ pub const CODEX_AGENT_ID: &str = "codex-acp";
 pub const CURSOR_AGENT_ID: &str = "cursor";
 /// The canonical id for Grok accounts; Grok agents have user-chosen ids.
 pub const GROK_AGENT_ID: &str = "grok";
+/// The ACP registry id of OpenCode.
+pub const OPENCODE_AGENT_ID: &str = "opencode";
 
 /// Identifies a non-default account: the absolute path of its home directory.
 ///
@@ -83,10 +85,17 @@ pub enum AccountProvider {
     Codex,
     Grok,
     Cursor,
+    OpenCode,
 }
 
 impl AccountProvider {
-    pub const ALL: [Self; 4] = [Self::Claude, Self::Codex, Self::Grok, Self::Cursor];
+    pub const ALL: [Self; 5] = [
+        Self::Claude,
+        Self::Codex,
+        Self::Grok,
+        Self::Cursor,
+        Self::OpenCode,
+    ];
 
     /// The provider whose accounts apply to the given agent, if any. Grok
     /// runs as a custom agent with a user-chosen id, so any id naming Grok
@@ -96,6 +105,7 @@ impl AccountProvider {
             CLAUDE_AGENT_ID => Some(Self::Claude),
             CODEX_AGENT_ID => Some(Self::Codex),
             CURSOR_AGENT_ID => Some(Self::Cursor),
+            OPENCODE_AGENT_ID => Some(Self::OpenCode),
             id if id.to_lowercase().contains("grok") => Some(Self::Grok),
             _ => None,
         }
@@ -109,6 +119,7 @@ impl AccountProvider {
             Self::Codex => CODEX_AGENT_ID,
             Self::Grok => GROK_AGENT_ID,
             Self::Cursor => CURSOR_AGENT_ID,
+            Self::OpenCode => OPENCODE_AGENT_ID,
         }
     }
 
@@ -128,6 +139,11 @@ impl AccountProvider {
                 var("CURSOR_CONFIG_DIR", format!("{home}/.cursor")),
                 var("AGENT_CLI_CREDENTIAL_STORE", "file".into()),
             ],
+            // OpenCode keeps everything in `$XDG_DATA_HOME/opencode`.
+            Self::OpenCode => Path::new(home)
+                .parent()
+                .map(|data_home| vec![var("XDG_DATA_HOME", data_home.display().to_string())])
+                .unwrap_or_default(),
         }
     }
 
@@ -138,6 +154,7 @@ impl AccountProvider {
             Self::Codex => "codex",
             Self::Grok => "grok",
             Self::Cursor => "cursor",
+            Self::OpenCode => "opencode",
         }
     }
 
@@ -147,7 +164,16 @@ impl AccountProvider {
     /// placed there replays without reaching the model, so Cursor gets the
     /// transcript as a first message instead.
     pub fn supports_native_handoff(self) -> bool {
-        matches!(self, Self::Claude | Self::Codex | Self::Grok)
+        matches!(
+            self,
+            Self::Claude | Self::Codex | Self::Grok | Self::OpenCode
+        )
+    }
+
+    /// OpenCode signs in to several model providers from its single data
+    /// directory, so it has one account; the others can have many.
+    pub fn supports_multiple_accounts(self) -> bool {
+        !matches!(self, Self::OpenCode)
     }
 
     pub fn display_name(self) -> &'static str {
@@ -156,6 +182,7 @@ impl AccountProvider {
             Self::Codex => "Codex",
             Self::Grok => "Grok",
             Self::Cursor => "Cursor",
+            Self::OpenCode => "OpenCode",
         }
     }
 }
@@ -241,6 +268,7 @@ pub fn new_account_home(provider: AccountProvider, name: &str, home_dir: &Path) 
         AccountProvider::Codex => ".codex",
         AccountProvider::Grok => ".grok",
         AccountProvider::Cursor => ".cursor",
+        AccountProvider::OpenCode => ".opencode-data",
     };
     let slug: String = name
         .trim()

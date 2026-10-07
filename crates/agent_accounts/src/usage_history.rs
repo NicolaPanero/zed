@@ -75,6 +75,7 @@ pub fn collect_local_entries(
             AccountProvider::Codex => home.join("sessions"),
             AccountProvider::Grok => home.join("logs"),
             AccountProvider::Cursor => continue,
+            AccountProvider::OpenCode => home.join("opencode.db"),
         };
         // Profiles may share history by linking it back to the main home.
         let Ok(root) = fs::canonicalize(&root) else {
@@ -98,6 +99,11 @@ pub fn collect_local_entries(
                 parse_grok_home(home, &root.join("unified.jsonl"), cutoff, now, &mut entries);
             }
             AccountProvider::Cursor => {}
+            AccountProvider::OpenCode => {
+                if let Err(error) = parse_opencode_db(&root, cutoff, &mut entries) {
+                    log::info!("reading OpenCode usage failed: {error:#}");
+                }
+            }
         }
     }
     entries.extend(claude_by_message.into_values());
@@ -245,6 +251,57 @@ fn parse_claude_file(
             by_message.insert(format!("{message_id}|{request_id}"), entry);
         }
     });
+}
+
+/// OpenCode keeps each assistant message as JSON in its SQLite database,
+/// with the tokens already split into uncached and cached input and, for
+/// pay-per-token providers, the cost it computed.
+fn parse_opencode_db(
+    path: &Path,
+    cutoff: DateTime<Utc>,
+    entries: &mut Vec<UsageEntry>,
+) -> Result<()> {
+    let connection = sqlez::connection::Connection::open_file(&path.to_string_lossy());
+    // OpenCode owns this database: never write to it.
+    connection.exec("PRAGMA query_only = ON")?()?;
+    let rows = connection.select_bound::<i64, String>(
+        "SELECT data FROM message
+         WHERE time_created >= ? AND json_extract(data, '$.role') = 'assistant'",
+    )?(cutoff.timestamp_millis())?;
+    entries.extend(rows.iter().filter_map(|row| opencode_entry(row, cutoff)));
+    Ok(())
+}
+
+fn opencode_entry(data: &str, cutoff: DateTime<Utc>) -> Option<UsageEntry> {
+    let message = serde_json::from_str::<Value>(data).ok()?;
+    let time = message
+        .pointer("/time/completed")
+        .or_else(|| message.pointer("/time/created"))
+        .and_then(Value::as_i64)?;
+    let timestamp = Utc.timestamp_millis_opt(time).single()?;
+    if timestamp < cutoff {
+        return None;
+    }
+    let tokens = message.get("tokens")?;
+    let entry = UsageEntry {
+        provider: Some(AccountProvider::OpenCode),
+        model: message
+            .get("modelID")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string(),
+        timestamp,
+        uncached_input: count(tokens.get("input")),
+        cached_input: count(tokens.pointer("/cache/read")),
+        cache_write_5m: count(tokens.pointer("/cache/write")),
+        cache_write_1h: 0,
+        output: count(tokens.get("output")) + count(tokens.get("reasoning")),
+        cost_usd: message
+            .get("cost")
+            .and_then(Value::as_f64)
+            .filter(|cost| *cost > 0.),
+    };
+    (entry.tokens() > 0).then_some(entry)
 }
 
 fn parse_codex_file(
@@ -617,7 +674,7 @@ pub fn price_for(provider: AccountProvider, model: &str, context_tokens: u64) ->
     let short = model.rsplit('/').next().unwrap_or(&model).to_string();
     let found = PRICES
         .iter()
-        .filter(|row| row.provider == provider)
+        .filter(|row| row.provider == provider || provider == AccountProvider::OpenCode)
         .filter(|row| short.starts_with(row.prefix) || model.starts_with(row.prefix))
         .max_by_key(|row| row.prefix.len());
     if let Some(found) = found {
@@ -629,7 +686,7 @@ pub fn price_for(provider: AccountProvider, model: &str, context_tokens: u64) ->
     }
     let cheapest = PRICES
         .iter()
-        .filter(|row| row.provider == provider)
+        .filter(|row| row.provider == provider || provider == AccountProvider::OpenCode)
         .min_by(|a, b| {
             (a.price.input + a.price.output).total_cmp(&(b.price.input + b.price.output))
         })
@@ -833,6 +890,86 @@ mod tests {
     fn write(path: &Path, contents: &str) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn reads_opencode_messages_from_its_database() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().join("opencode");
+        fs::create_dir_all(&data_dir).unwrap();
+        let database = data_dir.join("opencode.db");
+        let now = Utc::now();
+        let recent = (now - chrono::Duration::hours(1)).timestamp_millis();
+        let old = (now - chrono::Duration::days(30)).timestamp_millis();
+        {
+            let connection = sqlez::connection::Connection::open_file(&database.to_string_lossy());
+            connection
+                .exec("CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)")
+                .unwrap()()
+            .unwrap();
+            let rows = [
+                (
+                    recent,
+                    format!(
+                        r#"{{"role":"assistant","modelID":"claude-opus-5-5","time":{{"created":{recent}}},"tokens":{{"input":100,"output":20,"reasoning":5,"cache":{{"read":1000,"write":50}}}}}}"#
+                    ),
+                ),
+                (
+                    recent,
+                    format!(
+                        r#"{{"role":"assistant","modelID":"grok-4.7","time":{{"created":{recent}}},"cost":0.5,"tokens":{{"input":10,"output":1}}}}"#
+                    ),
+                ),
+                (
+                    recent,
+                    format!(r#"{{"role":"user","time":{{"created":{recent}}}}}"#),
+                ),
+                (
+                    old,
+                    format!(
+                        r#"{{"role":"assistant","modelID":"gpt-6.1-sol","time":{{"created":{old}}},"tokens":{{"input":10,"output":1}}}}"#
+                    ),
+                ),
+            ];
+            for (time, data) in rows {
+                connection
+                    .exec_bound::<(i64, String)>(
+                        "INSERT INTO message (time_created, data) VALUES (?, ?)",
+                    )
+                    .unwrap()((time, data))
+                .unwrap();
+            }
+        }
+
+        let entries = collect_local_entries(
+            &[(AccountProvider::OpenCode, data_dir)],
+            now - chrono::Duration::days(7),
+            now,
+        );
+        let mut summary: Vec<_> = entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry.model.as_str(),
+                    entry.uncached_input,
+                    entry.cached_input,
+                    entry.cache_write_5m,
+                    entry.output,
+                    entry.cost_usd,
+                )
+            })
+            .collect();
+        summary.sort_by(|a, b| a.0.cmp(b.0));
+        assert_eq!(
+            summary,
+            vec![
+                ("claude-opus-5-5", 100, 1000, 50, 25, None),
+                ("grok-4.7", 10, 0, 0, 1, Some(0.5)),
+            ]
+        );
+        // Models from any provider are priced at that provider's rates.
+        let (_, approximate) = price_for(AccountProvider::OpenCode, "anthropic/claude-opus-5-5", 0);
+        assert!(!approximate);
     }
 
     #[test]

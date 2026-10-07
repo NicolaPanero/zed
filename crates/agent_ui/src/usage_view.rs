@@ -273,17 +273,19 @@ impl AgentUsageView {
                     .child(Icon::new(provider_icon(provider)).color(Color::Muted))
                     .child(Label::new(provider.display_name())),
             )
-            .child(
-                Button::new(
-                    SharedString::from(format!("add-account-{}", provider.harness())),
-                    "Add account",
+            .when(provider.supports_multiple_accounts(), |this| {
+                this.child(
+                    Button::new(
+                        SharedString::from(format!("add-account-{}", provider.harness())),
+                        "Add account",
+                    )
+                    .label_size(LabelSize::Small)
+                    .start_icon(Icon::new(IconName::Plus).size(IconSize::Small))
+                    .on_click(move |_, window, cx| {
+                        window.dispatch_action(Box::new(add_account.clone()), cx)
+                    }),
                 )
-                .label_size(LabelSize::Small)
-                .start_icon(Icon::new(IconName::Plus).size(IconSize::Small))
-                .on_click(move |_, window, cx| {
-                    window.dispatch_action(Box::new(add_account.clone()), cx)
-                }),
-            );
+            });
         let body = if accounts.is_empty() {
             Label::new(format!(
                 "No {} logins on this computer — sign in and usage appears here.",
@@ -972,6 +974,7 @@ fn login_command(account: &AgentAccount) -> String {
         (AccountProvider::Cursor, false) => {
             format!("HOME={home} AGENT_CLI_CREDENTIAL_STORE=file cursor-agent login")
         }
+        (AccountProvider::OpenCode, _) => "opencode auth login".into(),
     }
 }
 
@@ -981,6 +984,7 @@ fn provider_icon(provider: AccountProvider) -> IconName {
         AccountProvider::Codex => IconName::AiOpenAi,
         AccountProvider::Grok => IconName::AiXAi,
         AccountProvider::Cursor => IconName::Sparkle,
+        AccountProvider::OpenCode => IconName::AiOpenCode,
     }
 }
 
@@ -990,6 +994,7 @@ fn provider_color(provider: AccountProvider) -> Hsla {
         AccountProvider::Codex => 0x1596d6,
         AccountProvider::Grok => 0x2f9e63,
         AccountProvider::Cursor => 0x8a63d2,
+        AccountProvider::OpenCode => 0xb8873a,
     };
     rgb(color).into()
 }

@@ -123,7 +123,10 @@ pub(crate) fn render_account_selector(
                             );
                         }
                     }
-                    if accounts.is_empty() {
+                    let multiple_accounts =
+                        agent_accounts::AccountProvider::for_agent(agent_id.as_ref())
+                            .is_some_and(|provider| provider.supports_multiple_accounts());
+                    if accounts.is_empty() || !multiple_accounts {
                         return menu;
                     }
                     let add_account = AddAgentAccount { agent: agent_id };

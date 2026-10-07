@@ -162,6 +162,10 @@ fn parse_new_session_id(output: &str, source_session_id: &str) -> Option<String>
 }
 
 fn is_session_id(token: &str) -> bool {
+    // OpenCode's ids look like `ses_27bba5a9e4894e89993d4cd502130c48`.
+    if let Some(rest) = token.strip_prefix("ses_") {
+        return !rest.is_empty() && rest.chars().all(|c| c.is_ascii_alphanumeric());
+    }
     let groups: Vec<&str> = token.split('-').collect();
     groups.len() == 5
         && groups
@@ -176,7 +180,7 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[test]
-    fn parses_claude_and_codex_output() {
+    fn parses_the_new_session_id() {
         let claude = "simple → claude_code  /tmp/t/projects/-x/b022b18c-36da-4f2c-bc52-0fccf3078562.jsonl\n  resume with: claude --resume b022b18c-36da-4f2c-bc52-0fccf3078562\n";
         assert_eq!(
             parse_new_session_id(claude, "4cfbecbb-2fb1-4fe0-860a-6f06a214cc2e").as_deref(),
@@ -186,6 +190,11 @@ mod tests {
         assert_eq!(
             parse_new_session_id(codex, "01a10277-56f1-7501-869a-1b8230b5ea5d").as_deref(),
             Some("01a10314-9706-7be0-b8f2-11747cccb1cb")
+        );
+        let opencode = "simple → opencode  imported via `opencode import`\n  resume with: opencode --session ses_27bba5a9e4894e89993d4cd502130c48\n";
+        assert_eq!(
+            parse_new_session_id(opencode, "b022b18c-36da-4f2c-bc52-0fccf3078562").as_deref(),
+            Some("ses_27bba5a9e4894e89993d4cd502130c48")
         );
     }
 
