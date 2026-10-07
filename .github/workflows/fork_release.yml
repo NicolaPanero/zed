@@ -1,0 +1,148 @@
+# Builds this fork for Apple Silicon Macs and publishes it as a GitHub
+# release whenever the fork's release branch (its newest vX.Y.x branch) has a
+# commit without a release yet. It runs after each sync and on demand.
+#
+# The app is ad-hoc signed (no Apple Developer ID) and built as Zed's
+# "preview" channel under the name "Zed Fork", so it lives next to an
+# official Zed. Updates come from this repository: the app checks its
+# releases and runs script/install-fork.sh; Zed's own updater is off.
+
+name: Build fork release
+
+on:
+  workflow_run:
+    workflows: ["Sync fork with upstream"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Build even if the release branch's commit already has a release
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    if: github.repository == 'NicolaPanero/zed'
+    runs-on: ubuntu-latest
+    outputs:
+      branch: ${{ steps.find.outputs.branch }}
+      sha: ${{ steps.find.outputs.sha }}
+      version: ${{ steps.find.outputs.version }}
+      tag: ${{ steps.find.outputs.tag }}
+      build: ${{ steps.find.outputs.build }}
+    steps:
+      - name: Find the commit to build
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force || false }}
+        run: |
+          branch=$(gh api --paginate "repos/$GITHUB_REPOSITORY/branches?per_page=100" --jq '.[].name' |
+            grep -E '^v[0-9]+\.[0-9]+\.x$' | sort -V | tail -n 1)
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$branch" --jq .sha)
+          version=$(gh api "repos/$GITHUB_REPOSITORY/contents/crates/zed/Cargo.toml?ref=$sha" --jq .content |
+            base64 -d | sed -n 's/^version = "\(.*\)"$/\1/p' | head -n 1)
+          tag="v${version}-fork.${sha:0:7}"
+          build=true
+          if [ "$FORCE" != "true" ] && gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            build=false
+          fi
+          echo "Branch $branch at $sha (Zed $version): tag $tag, build=$build"
+          {
+            echo "branch=$branch"
+            echo "sha=$sha"
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "build=$build"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: macos-15
+    timeout-minutes: 360
+    env:
+      # Faster, lighter than Zed's own release profile, so it fits a free
+      # GitHub runner; the app is a little larger and slower to start.
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      CARGO_PROFILE_RELEASE_DEBUG: "false"
+      CARGO_INCREMENTAL: "0"
+      ZED_RELEASE_CHANNEL: preview
+      ZED_COMMIT_SHA: ${{ needs.check.outputs.sha }}
+      ZED_FORK_RELEASE: ${{ needs.check.outputs.tag }}
+      ZED_UPDATE_EXPLANATION: >-
+        This build of Zed comes from github.com/NicolaPanero/zed and updates
+        itself from there: it tells you when a newer build is available.
+      TARGET: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+
+      - name: Install the Rust toolchain
+        run: rustup show
+
+      - name: Install cargo-bundle
+        run: cargo install cargo-bundle --git https://github.com/zed-industries/cargo-bundle.git --branch zed-deploy --locked
+
+      - name: Generate licenses
+        run: script/generate-licenses
+
+      - name: Build
+        run: cargo --config .cargo/bundle-config.toml build --release --package zed --package cli --target "$TARGET"
+
+      - name: Bundle
+        run: |
+          cd crates/zed
+          cp Cargo.toml Cargo.toml.original
+          sed -i.bak \
+            -e 's/package.metadata.bundle-preview/package.metadata.bundle/' \
+            -e 's/^name = "Zed Preview"$/name = "Zed Fork"/' \
+            Cargo.toml
+          app_path=$(cargo bundle --release --target "$TARGET" --select-workspace-root | xargs)
+          mv Cargo.toml.original Cargo.toml
+          cd ../..
+          cp crates/zed/resources/Document.icns "$app_path/Contents/Resources/Document.icns"
+          cp crates/zed/contents/preview/embedded.provisionprofile "$app_path/Contents/"
+          sed '/com.apple.developer.associated-domains/,+1d' crates/zed/resources/zed.entitlements \
+            > "$RUNNER_TEMP/zed.entitlements"
+          codesign --force --deep --entitlements "$RUNNER_TEMP/zed.entitlements" --sign - "$app_path"
+          ditto -c -k --sequesterRsrc --keepParent "$app_path" "$RUNNER_TEMP/Zed-Fork-aarch64.zip"
+          ls -lh "$RUNNER_TEMP/Zed-Fork-aarch64.zip"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.check.outputs.tag }}
+          SHA: ${{ needs.check.outputs.sha }}
+          BRANCH: ${{ needs.check.outputs.branch }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
+          Zed ${VERSION} with this fork's changes, from \`${BRANCH}\` at ${SHA}.
+
+          Install or update on an Apple Silicon Mac (settings are kept):
+
+          \`\`\`sh
+          curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/script/install-fork.sh | sh
+          \`\`\`
+
+          The app isn't notarized. Installed with the command above it opens
+          normally; downloaded with a browser, open it once from System
+          Settings → Privacy & Security → "Open Anyway".
+          EOF
+          gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" "$RUNNER_TEMP/Zed-Fork-aarch64.zip" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$SHA" \
+            --title "Zed Fork ${VERSION} (${SHA:0:7})" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            --latest
