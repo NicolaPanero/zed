@@ -2854,6 +2854,11 @@
     "ui_font_family": ".SystemUIFont",
     "ui_font_size": 13,
     "minimap": { "show": "always" },
+    // The terminal otherwise follows the editor's font and size.
+    "terminal": {
+      "font_family": "Menlo",
+      "font_size": 12,
+    },
   },
   // Settings overrides to use when using Zed Nightly.
   // Mostly useful for developers who are managing multiple instances of Zed.
