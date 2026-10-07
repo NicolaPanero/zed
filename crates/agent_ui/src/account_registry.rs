@@ -209,6 +209,68 @@ impl AccountRegistry {
         });
     }
 
+    /// Gives an account the name shown instead of its email or directory;
+    /// `None` goes back to the email.
+    pub fn rename(account: &AgentAccount, name: Option<String>, cx: &App) {
+        let provider = account.provider;
+        let home = account.home.clone();
+        let label = agent_accounts::fallback_account_label(
+            &AccountId::new(&account.home),
+            util::paths::home_dir(),
+        );
+        settings::update_settings_file(<dyn fs::Fs>::global(cx), cx, move |content, _| {
+            let home_dir = util::paths::home_dir();
+            let entries = content
+                .agent_accounts
+                .get_or_insert_default()
+                .accounts
+                .get_or_insert_default();
+            let existing = entries.iter_mut().find(|entry| {
+                AccountProvider::for_agent(&entry.agent) == Some(provider)
+                    && agent_accounts::expand_home(&entry.home, home_dir) == home
+            });
+            match existing {
+                Some(entry) => entry.name = name,
+                None if name.is_some() => entries.push(settings::AgentAccountSettingsContent {
+                    agent: provider.agent_id().to_string(),
+                    home: label,
+                    name,
+                    default: None,
+                }),
+                None => {}
+            }
+        });
+    }
+
+    /// Forgets an account in settings; its directory is left to the caller.
+    pub fn forget(account: &AgentAccount, cx: &App) {
+        let provider = account.provider;
+        let home = account.home.clone();
+        settings::update_settings_file(<dyn fs::Fs>::global(cx), cx, move |content, _| {
+            let home_dir = util::paths::home_dir();
+            if let Some(entries) = content
+                .agent_accounts
+                .as_mut()
+                .and_then(|accounts| accounts.accounts.as_mut())
+            {
+                entries.retain(|entry| {
+                    AccountProvider::for_agent(&entry.agent) != Some(provider)
+                        || agent_accounts::expand_home(&entry.home, home_dir) != home
+                });
+            }
+        });
+    }
+
+    /// Rescans now, for example after an account's directory was removed.
+    pub fn refresh_now(cx: &mut App) {
+        if cx
+            .try_global::<Self>()
+            .is_some_and(|registry| !registry.refreshing)
+        {
+            Self::refresh(cx);
+        }
+    }
+
     /// A short label for an account of the given agent.
     pub fn label(agent_id: &str, account: Option<&AccountId>, cx: &App) -> String {
         let account = account.filter(|account| !account.is_system());
