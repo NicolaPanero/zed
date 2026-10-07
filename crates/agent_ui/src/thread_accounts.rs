@@ -146,6 +146,49 @@ impl Agent {
     }
 }
 
+/// Deletes a thread for good: its metadata, its archived worktrees and,
+/// when the agent supports it, the session in the store of the account the
+/// thread ran with.
+pub fn delete_thread_permanently(
+    thread_id: ThreadId,
+    session_id: Option<agent_client_protocol::schema::v1::SessionId>,
+    agent_id: AgentId,
+    connection_store: &gpui::Entity<crate::agent_connection_store::AgentConnectionStore>,
+    cx: &mut App,
+) {
+    let agent = agent_for_thread(Agent::from(agent_id), thread_id, cx);
+    crate::thread_metadata_store::ThreadMetadataStore::global(cx)
+        .update(cx, |store, cx| store.delete(thread_id, cx));
+    let fs = <dyn fs::Fs>::global(cx);
+    let connection = connection_store.update(cx, |store, cx| {
+        store
+            .request_connection(
+                agent.clone(),
+                agent.server(fs, agent::ThreadStore::global(cx)),
+                cx,
+            )
+            .read(cx)
+            .wait_for_connection()
+    });
+    cx.spawn(async move |cx| {
+        crate::thread_worktree_archive::cleanup_thread_archived_worktrees(thread_id, cx).await;
+        let state = connection.await?;
+        let deletion = cx.update(|cx| match &session_id {
+            Some(session_id) => match state
+                .connection
+                .session_list(cx)
+                .filter(|list| list.supports_delete())
+            {
+                Some(list) => list.delete_session(session_id, cx),
+                None => Task::ready(Ok(())),
+            },
+            None => Task::ready(Ok(())),
+        });
+        deletion.await
+    })
+    .detach_and_log_err(cx);
+}
+
 const TERMINAL_NAMESPACE: &str = "agent_terminal_accounts";
 
 /// The account a terminal thread was opened with: its shell gets the
