@@ -41,6 +41,7 @@ mod unicode_confusables;
 mod account_registry;
 mod account_selector;
 mod add_account_modal;
+mod fork_update;
 pub mod thread_accounts;
 mod usage_view;
 pub use usage_view::OpenAgentUsage;
@@ -613,6 +614,7 @@ pub fn init(
     prompt_store::init(cx);
     account_registry::AccountRegistry::init(cx);
     usage_view::init(cx);
+    fork_update::init(cx);
 
     cx.set_global(agent_skills::SkillsUpdatedHook(std::rc::Rc::new(|cx| {
         let workspaces: Vec<_> = workspace::AppState::global(cx)
