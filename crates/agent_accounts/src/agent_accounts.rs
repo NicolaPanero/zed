@@ -159,10 +159,8 @@ impl AccountProvider {
     }
 
     /// Whether a session txcript writes for this provider loads through the
-    /// agent's ACP `session/load` with its history. Cursor's ACP server only
-    /// reads its own `acp-sessions` store, and even a converted session
-    /// placed there replays without reaching the model, so Cursor gets the
-    /// transcript as a first message instead.
+    /// agent's ACP `session/load` with its history. Cursor needs the fork's
+    /// txcript and a copy into its ACP store, both handled by the hand-off.
     pub fn supports_native_handoff(self) -> bool {
         matches!(
             self,

@@ -385,6 +385,7 @@ dependencies = [
  "futures 0.3.34",
  "http_client",
  "log",
+ "md-5",
  "pretty_assertions",
  "schemars 1.0.4",
  "serde",
