@@ -125,10 +125,18 @@ async fn run_step(
 }
 
 fn find_txcript(shell_env: &HashMap<String, String>) -> Option<PathBuf> {
-    let mut dirs: Vec<PathBuf> = shell_env
-        .get("PATH")
-        .map(|path| std::env::split_paths(path).collect())
-        .unwrap_or_default();
+    // Release builds of this fork ship it next to the app's executable.
+    let mut dirs: Vec<PathBuf> = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+        .into_iter()
+        .collect();
+    dirs.extend(
+        shell_env
+            .get("PATH")
+            .map(|path| std::env::split_paths(path).collect::<Vec<_>>())
+            .unwrap_or_default(),
+    );
     // Its installer's default location, which GUI-launched shells may miss.
     dirs.push(util::paths::home_dir().join(".local/bin"));
     dirs.into_iter()

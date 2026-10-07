@@ -25,7 +25,7 @@ This is [NicolaPanero/zed](https://github.com/NicolaPanero/zed), a fork of Zed's
 ### Continue with…
 
 - The agent panel's "…" → "Continue with…" moves the current conversation to another agent or account.
-- The conversation is converted with the `txcript` CLI, which must be on your `PATH`, into the target agent's own session store, then reopened there, so the agent really has the history. The original thread is left unchanged.
+- The conversation is converted with the `txcript` CLI (bundled in release builds; otherwise it must be on your `PATH`) into the target agent's own session store, then reopened there, so the agent really has the history. The original thread is left unchanged.
 - Native transfer works for Claude Code, Codex and Grok. For Cursor, or if `txcript` fails, the transcript is sent as the first message of a new thread instead.
 - Threads continued this way show where they came from, in the thread and in the sidebar.
 
