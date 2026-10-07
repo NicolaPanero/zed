@@ -5590,7 +5590,6 @@ impl AgentPanel {
         let has_thread_messages = conversation_view.as_ref().is_some_and(|conversation_view| {
             conversation_view.read(cx).has_user_submitted_prompt(cx)
         });
-        let handoff_targets = self.handoff_targets_for_menu(has_thread_messages, cx);
 
         let has_auth_methods = match &self.base_view {
             BaseView::AgentThread { conversation_view } => {
@@ -5667,8 +5666,6 @@ impl AgentPanel {
                                     });
                                 }
 
-                                menu =
-                                    thread_handoff::continue_with_submenu(menu, &handoff_targets);
                                 menu = menu.separator();
                             }
                         }

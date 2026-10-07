@@ -158,18 +158,6 @@ impl AgentPanel {
         }));
     }
 
-    /// The agents and accounts the active thread can be continued with,
-    /// with their menu labels.
-    pub(crate) fn handoff_targets(&self, cx: &App) -> Vec<(Agent, SharedString)> {
-        let Some(current) = self
-            .active_conversation_view()
-            .map(|view| view.read(cx).connection_key().clone())
-        else {
-            return Vec::new();
-        };
-        handoff_targets(&current, &self.project, cx)
-    }
-
     /// Opens a terminal thread whose shell runs agent CLIs with an account.
     pub(crate) fn new_terminal_with_account(
         &mut self,
@@ -641,43 +629,6 @@ impl AgentPanel {
             .map(|account| account.env())
             .unwrap_or_default()
     }
-
-    pub(super) fn handoff_targets_for_menu(
-        &self,
-        has_thread_messages: bool,
-        cx: &App,
-    ) -> Vec<(Agent, SharedString)> {
-        if has_thread_messages {
-            self.handoff_targets(cx)
-        } else {
-            Vec::new()
-        }
-    }
-}
-
-/// The options menu's "Continue with…" submenu.
-pub(super) fn continue_with_submenu(
-    menu: ContextMenu,
-    targets: &[(Agent, SharedString)],
-) -> ContextMenu {
-    if targets.is_empty() {
-        return menu;
-    }
-    let targets = targets.to_vec();
-    menu.submenu("Continue with…", move |mut menu, _, _| {
-        for (target, label) in &targets {
-            menu = menu.action(
-                label.clone(),
-                Box::new(ContinueThreadWith {
-                    agent: target.id(),
-                    // Explicit, so the CLI's own home stays pickable while
-                    // another account is the default.
-                    account: Some(target.account().cloned().unwrap_or_else(AccountId::system)),
-                }),
-            );
-        }
-        menu
-    })
 }
 
 /// The new-thread button's label, with the selected agent's account.
