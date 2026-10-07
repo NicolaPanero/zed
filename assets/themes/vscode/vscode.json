@@ -419,7 +419,12 @@
             "font_style": null,
             "font_weight": null
           }
-        }
+        },
+        "accents": [
+          "#ffd700ff",
+          "#da70d6ff",
+          "#179fffff"
+        ]
       }
     },
     {
@@ -836,7 +841,12 @@
             "font_style": null,
             "font_weight": null
           }
-        }
+        },
+        "accents": [
+          "#0431faff",
+          "#319331ff",
+          "#7b3814ff"
+        ]
       }
     }
   ]
