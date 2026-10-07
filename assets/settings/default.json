@@ -2840,6 +2840,20 @@
   // Mostly useful for developers who are managing multiple instances of Zed.
   "preview": {
     // "theme": "Andromeda"
+    // This fork's builds run as Preview; these defaults make them feel like
+    // Visual Studio Code. Anything in your own settings still wins.
+    "theme": {
+      "mode": "system",
+      "light": "VS Code Light Modern",
+      "dark": "VS Code Dark Modern",
+    },
+    "base_keymap": "VSCode",
+    "buffer_font_family": "Menlo",
+    "buffer_font_size": 12,
+    "buffer_line_height": { "custom": 1.5 },
+    "ui_font_family": ".SystemUIFont",
+    "ui_font_size": 13,
+    "minimap": { "show": "always" },
   },
   // Settings overrides to use when using Zed Nightly.
   // Mostly useful for developers who are managing multiple instances of Zed.
