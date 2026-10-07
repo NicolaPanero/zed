@@ -160,3 +160,73 @@ impl Render for AddAccountModal {
             )
     }
 }
+
+/// Renames an account: the name replaces its email or directory in menus.
+pub struct RenameAccountModal {
+    account: agent_accounts::AgentAccount,
+    editor: Entity<Editor>,
+}
+
+impl EventEmitter<DismissEvent> for RenameAccountModal {}
+impl ModalView for RenameAccountModal {}
+
+impl Focusable for RenameAccountModal {
+    fn focus_handle(&self, cx: &App) -> gpui::FocusHandle {
+        self.editor.focus_handle(cx)
+    }
+}
+
+impl RenameAccountModal {
+    pub fn new(
+        account: agent_accounts::AgentAccount,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let editor = cx.new(|cx| {
+            let mut editor = Editor::single_line(window, cx);
+            editor.set_placeholder_text("Account name (empty to show its email)", window, cx);
+            if let Some(name) = &account.name {
+                editor.set_text(name.clone(), window, cx);
+            }
+            editor
+        });
+        Self { account, editor }
+    }
+
+    fn cancel(&mut self, _: &menu::Cancel, _: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(DismissEvent);
+    }
+
+    fn confirm(&mut self, _: &menu::Confirm, _: &mut Window, cx: &mut Context<Self>) {
+        let name = self.editor.read(cx).text(cx).trim().to_string();
+        crate::account_registry::AccountRegistry::rename(
+            &self.account,
+            (!name.is_empty()).then_some(name),
+            cx,
+        );
+        cx.emit(DismissEvent);
+    }
+}
+
+impl Render for RenameAccountModal {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .key_context("RenameAccountModal")
+            .on_action(cx.listener(Self::cancel))
+            .on_action(cx.listener(Self::confirm))
+            .elevation_3(cx)
+            .w_96()
+            .overflow_hidden()
+            .child(
+                v_flex()
+                    .p_2()
+                    .gap_1()
+                    .child(Label::new(format!(
+                        "Rename {} account {}",
+                        self.account.provider.display_name(),
+                        self.account.home_label
+                    )))
+                    .child(self.editor.clone()),
+            )
+    }
+}

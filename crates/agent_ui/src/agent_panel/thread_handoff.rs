@@ -683,7 +683,7 @@ pub(super) fn account_menu_entries(
     let mut has_header = false;
     for (agent_id, name, icon) in &agents {
         let accounts = AccountRegistry::accounts_for_agent(agent_id.as_ref(), cx);
-        if accounts.len() < 2 {
+        if accounts.is_empty() {
             continue;
         }
         if !has_header {

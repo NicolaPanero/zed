@@ -5756,7 +5756,7 @@ impl AgentPanel {
 
                         menu = menu
                             .action("Settings", Box::new(OpenSettings))
-                            .action("Usage", Box::new(crate::OpenAgentUsage))
+                            .action("Accounts & Usage", Box::new(crate::OpenAgentUsage))
                             .separator()
                             .action("Toggle Threads Sidebar", Box::new(ToggleWorkspaceSidebar));
 

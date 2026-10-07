@@ -27,6 +27,7 @@ pub(crate) fn render_account_selector(
     agent: &Agent,
     has_messages: bool,
     is_local_project: bool,
+    other_agents: Vec<(Agent, SharedString)>,
     cx: &App,
 ) -> Option<AnyElement> {
     // Account homes are local paths; remote agents can't use them.
@@ -35,11 +36,15 @@ pub(crate) fn render_account_selector(
     }
     let agent_id = agent.id();
     let accounts = AccountRegistry::accounts_for_agent(agent_id.as_ref(), cx);
-    if accounts.is_empty() {
+    if accounts.is_empty() && other_agents.is_empty() {
         return None;
     }
     let current = agent.account().cloned();
-    let current_label = AccountRegistry::label(agent_id.as_ref(), current.as_ref(), cx);
+    let current_label = if accounts.is_empty() {
+        "Continue with…".to_string()
+    } else {
+        AccountRegistry::label(agent_id.as_ref(), current.as_ref(), cx)
+    };
 
     let trigger = Button::new("account-selector-trigger", current_label)
         .label_size(LabelSize::Small)
@@ -50,7 +55,7 @@ pub(crate) fn render_account_selector(
                 .color(Color::Muted),
         );
     let tooltip = if has_messages {
-        "Continue this conversation with another account"
+        "Continue this conversation with another account or agent"
     } else {
         "Choose the account for this thread"
     };
@@ -68,12 +73,15 @@ pub(crate) fn render_account_selector(
                 let accounts = accounts.clone();
                 let current = current.clone();
                 let agent_id = agent_id.clone();
+                let other_agents = other_agents.clone();
                 Some(ContextMenu::build(window, cx, move |mut menu, _, cx| {
-                    menu = menu.header(if has_messages {
-                        "Continue with account"
-                    } else {
-                        "Account"
-                    });
+                    if !accounts.is_empty() {
+                        menu = menu.header(if has_messages {
+                            "Continue with account"
+                        } else {
+                            "Account"
+                        });
+                    }
                     for account in &accounts {
                         let account_id = Some(account.selection());
                         let is_current = account.id() == current;
@@ -97,6 +105,26 @@ pub(crate) fn render_account_selector(
                                     window.dispatch_action(action.boxed_clone(), cx)
                                 }),
                         );
+                    }
+                    if !other_agents.is_empty() {
+                        menu = menu.separator().header("Continue with agent");
+                        for (target, label) in &other_agents {
+                            menu = menu.action(
+                                label.clone(),
+                                Box::new(ContinueThreadWith {
+                                    agent: target.id(),
+                                    account: Some(
+                                        target
+                                            .account()
+                                            .cloned()
+                                            .unwrap_or_else(agent_accounts::AccountId::system),
+                                    ),
+                                }),
+                            );
+                        }
+                    }
+                    if accounts.is_empty() {
+                        return menu;
                     }
                     let add_account = AddAgentAccount { agent: agent_id };
                     menu.separator().item(
@@ -306,12 +334,23 @@ pub(crate) fn thread_account_selector(
     cx: &App,
 ) -> Option<AnyElement> {
     let view = server_view.upgrade()?;
+    let agent = view.read(cx).connection_key();
+    let has_messages = !thread.read(cx).entries().is_empty();
+    let project = project.upgrade()?;
+    // Other agents only: this agent's accounts are listed above them.
+    let other_agents = if has_messages {
+        crate::agent_panel::thread_handoff::handoff_targets(agent, &project, cx)
+            .into_iter()
+            .filter(|(target, _)| target.id() != agent.id())
+            .collect()
+    } else {
+        Vec::new()
+    };
     render_account_selector(
-        view.read(cx).connection_key(),
-        !thread.read(cx).entries().is_empty(),
-        project
-            .upgrade()
-            .is_some_and(|project| project.read(cx).is_local()),
+        agent,
+        has_messages,
+        project.read(cx).is_local(),
+        other_agents,
         cx,
     )
 }

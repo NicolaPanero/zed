@@ -20,11 +20,12 @@ This is [NicolaPanero/zed](https://github.com/NicolaPanero/zed), a fork of Zed's
   - one entry per account in the agent panel's "+" menu;
   - terminals that start with an account's environment.
 - **Adding one.** "+" → "Add Account" (or "Add Account…" in the account picker) creates a profile directory and opens a thread where the agent's own sign-in runs inside it.
-- **Default account.** Mark one as the default for new threads from the usage page ("Make default") or in settings.
+- **Default account.** Mark one as the default for new threads from the "Agent Accounts & Usage" page ("Make default") or in settings.
+- **Managing them.** The "Agent Accounts & Usage" page (agent panel "…" → "Accounts & Usage", or `agent: open agent accounts`) lists every account; each card's "…" menu renames it or removes it (its directory goes to the Trash).
 
 ### Continue with…
 
-- The agent panel's "…" → "Continue with…" moves the current conversation to another agent or account.
+- The account picker under the message editor ("Continue with agent") or the agent panel's "…" → "Continue with…" moves the current conversation to another agent or account.
 - The conversation is converted with the `txcript` CLI (bundled in release builds; otherwise it must be on your `PATH`) into the target agent's own session store, then reopened there, so the agent really has the history. The original thread is left unchanged.
 - Native transfer works for Claude Code, Codex and Grok. For Cursor, or if `txcript` fails, the transcript is sent as the first message of a new thread instead.
 - Threads continued this way show where they came from, in the thread and in the sidebar.
@@ -33,7 +34,7 @@ This is [NicolaPanero/zed](https://github.com/NicolaPanero/zed), a fork of Zed's
 
 - **Quota.** The account picker and menus show each account's quota (session and weekly windows for Claude and Codex, weekly for Grok), refreshed at most every 5 minutes.
 - **Out of quota.** When an agent reports that an account is out of quota or credits, the thread offers to continue with another account or agent.
-- **Agent Usage page** (agent panel "…" → "Usage", or the `agent: open agent usage` command):
+- **Agent Accounts & Usage page** (agent panel "…" → "Accounts & Usage", or the `agent: open agent usage` command):
   - every account with its quota windows, plan and reset times;
   - token usage over 7, 30 or 90 days, estimated at API rates from the agents' local session logs, plus Cursor's own usage events.
 
@@ -54,6 +55,23 @@ This is [NicolaPanero/zed](https://github.com/NicolaPanero/zed), a fork of Zed's
 - With `auto_switch` enabled, new threads avoid accounts whose quota is above the threshold.
 
 Accounts are local only: they are hidden in remote projects.
+
+### Grok Build
+
+Zed's agent registry installs Grok Build (`grok-build`) through npm and starts its `bin/grok` with Node, but the package replaces that file with Grok's native executable, so the agent fails to launch with `SyntaxError: Invalid or unexpected token`. Add Grok as a custom agent instead, pointing at the Grok CLI you already have installed:
+
+```json
+"agent_servers": {
+  "Grok Build": {
+    "type": "custom",
+    "command": "/Users/<you>/.grok/bin/grok",
+    "args": ["agent", "stdio"],
+    "default_config_options": { "model": "grok-4.7" }
+  }
+}
+```
+
+`default_config_options.model` is only needed when Grok runs on an API key for a model configured in `~/.grok/config.toml` (here `grok-4.7`): sessions continued from another agent otherwise reopen on Grok's default model, which needs a `grok login`. Any agent id containing "grok" gets Grok's accounts, quota and "Continue with…".
 
 ### Installing and updating
 

@@ -1,4 +1,4 @@
-//! "Agent Usage": every agent account with its official quota, and token
+//! "Agent Accounts & Usage": every agent account with its official quota, and token
 //! usage over time estimated from the agents' local session logs.
 
 use std::path::PathBuf;
@@ -10,21 +10,29 @@ use agent_accounts::usage_history::{
 };
 use agent_accounts::{AccountProvider, AgentAccount};
 use chrono::{Local, Utc};
+use fs::{Fs, RemoveOptions};
 use gpui::{
-    Action, App, AppContext as _, Entity, EventEmitter, FocusHandle, Focusable, Hsla, Render, Task,
-    Window, relative, rgb,
+    Action, App, AppContext as _, Entity, EventEmitter, FocusHandle, Focusable, Hsla, PromptLevel,
+    Render, Task, TaskExt as _, WeakEntity, Window, relative, rgb,
 };
 use project::{AgentId, Project};
-use ui::{Divider, Tooltip, prelude::*};
+use ui::{ContextMenu, Divider, PopoverMenu, Tooltip, prelude::*};
+use util::ResultExt as _;
 use workspace::{Item, Workspace};
 
 use crate::account_registry::{AccountRegistry, QuotaRegistry};
-use crate::add_account_modal::AddAgentAccount;
+use crate::add_account_modal::{AddAgentAccount, RenameAccountModal};
 
 /// Opens the agent usage page.
+/// Opens the agent accounts and usage page.
 #[derive(Clone, Default, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
 #[action(namespace = agent)]
 pub struct OpenAgentUsage;
+
+/// Opens the agent accounts and usage page.
+#[derive(Clone, Default, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
+#[action(namespace = agent)]
+pub struct OpenAgentAccounts;
 
 const HISTORY_DAYS: u32 = 90;
 const HISTORY_TTL: Duration = Duration::from_secs(5 * 60);
@@ -32,17 +40,26 @@ const CHART_HEIGHT: f32 = 140.;
 
 pub fn init(cx: &mut App) {
     cx.observe_new(|workspace: &mut Workspace, _, _| {
-        workspace.register_action(|workspace, _: &OpenAgentUsage, window, cx| {
-            if let Some(existing) = workspace.item_of_type::<AgentUsageView>(cx) {
-                workspace.activate_item(&existing, true, true, window, cx);
-                return;
-            }
-            let project = workspace.project().clone();
-            let view = cx.new(|cx| AgentUsageView::new(project, cx));
-            workspace.add_item_to_active_pane(Box::new(view), None, true, window, cx);
-        });
+        workspace
+            .register_action(|workspace, _: &OpenAgentUsage, window, cx| {
+                open(workspace, window, cx)
+            })
+            .register_action(|workspace, _: &OpenAgentAccounts, window, cx| {
+                open(workspace, window, cx)
+            });
     })
     .detach();
+}
+
+fn open(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    if let Some(existing) = workspace.item_of_type::<AgentUsageView>(cx) {
+        workspace.activate_item(&existing, true, true, window, cx);
+        return;
+    }
+    let project = workspace.project().clone();
+    let workspace_handle = workspace.weak_handle();
+    let view = cx.new(|cx| AgentUsageView::new(project, workspace_handle, cx));
+    workspace.add_item_to_active_pane(Box::new(view), None, true, window, cx);
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -53,6 +70,7 @@ enum Metric {
 
 pub struct AgentUsageView {
     project: Entity<Project>,
+    workspace: WeakEntity<Workspace>,
     focus_handle: FocusHandle,
     hide_emails: bool,
     metric: Metric,
@@ -65,13 +83,18 @@ pub struct AgentUsageView {
 }
 
 impl AgentUsageView {
-    fn new(project: Entity<Project>, cx: &mut Context<Self>) -> Self {
+    fn new(
+        project: Entity<Project>,
+        workspace: WeakEntity<Workspace>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let observers = vec![
             cx.observe_global::<AccountRegistry>(|_, cx| cx.notify()),
             cx.observe_global::<QuotaRegistry>(|_, cx| cx.notify()),
         ];
         let mut this = Self {
             project,
+            workspace,
             focus_handle: cx.focus_handle(),
             hide_emails: false,
             metric: Metric::Cost,
@@ -186,8 +209,10 @@ impl AgentUsageView {
 
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         h_flex()
+            .flex_wrap()
+            .gap_2()
             .justify_between()
-            .child(Headline::new("Agent Usage").size(HeadlineSize::Small))
+            .child(Headline::new("Agent Accounts & Usage").size(HeadlineSize::Small))
             .child(
                 h_flex()
                     .gap_3()
@@ -274,9 +299,10 @@ impl AgentUsageView {
                 .enumerate()
                 .map(|(index, account)| self.render_account(index, account, several, cx))
                 .collect();
-            div()
-                .grid()
-                .grid_cols(2)
+            // Two cards per row when there's room, one in a narrow pane.
+            h_flex()
+                .flex_wrap()
+                .items_start()
                 .gap_3()
                 .children(cards)
                 .into_any_element()
@@ -370,7 +396,8 @@ impl AgentUsageView {
                         .color(Color::Muted)
                         .truncate(),
                 ),
-            );
+            )
+            .child(self.render_account_menu(&id_suffix, account));
 
         let body = match &quota {
             None => message("Reading usage…"),
@@ -423,9 +450,10 @@ impl AgentUsageView {
         };
 
         v_flex()
+            .flex_1()
+            .min_w(px(320.))
             .p_3()
             .gap_2()
-            .min_w_0()
             .overflow_hidden()
             .rounded_md()
             .border_1()
@@ -439,6 +467,45 @@ impl AgentUsageView {
             .child(Divider::horizontal())
             .child(footer)
             .into_any_element()
+    }
+
+    fn render_account_menu(&self, id_suffix: &str, account: &AgentAccount) -> impl IntoElement {
+        let account = account.clone();
+        let workspace = self.workspace.clone();
+        PopoverMenu::new(SharedString::from(format!("account-menu-{id_suffix}")))
+            .trigger(
+                IconButton::new(
+                    SharedString::from(format!("account-menu-trigger-{id_suffix}")),
+                    IconName::Ellipsis,
+                )
+                .icon_size(IconSize::Small)
+                .icon_color(Color::Muted),
+            )
+            .anchor(gpui::Anchor::TopRight)
+            .menu(move |window, cx| {
+                let account = account.clone();
+                let workspace = workspace.clone();
+                Some(ContextMenu::build(window, cx, move |menu, _, _| {
+                    let rename_account = account.clone();
+                    let menu = menu.entry("Rename…", None, move |window, cx| {
+                        let account = rename_account.clone();
+                        workspace
+                            .update(cx, |workspace, cx| {
+                                workspace.toggle_modal(window, cx, |window, cx| {
+                                    RenameAccountModal::new(account, window, cx)
+                                })
+                            })
+                            .log_err();
+                    });
+                    // The CLI's own home is not ours to delete.
+                    if account.is_default {
+                        return menu;
+                    }
+                    menu.entry("Remove…", None, move |window, cx| {
+                        confirm_remove(account.clone(), window, cx)
+                    })
+                }))
+            })
     }
 
     fn render_history(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -941,7 +1008,7 @@ impl Item for AgentUsageView {
     fn to_item_events(_: &Self::Event, _: &mut dyn FnMut(workspace::item::ItemEvent)) {}
 
     fn tab_content_text(&self, _detail: usize, _cx: &App) -> SharedString {
-        "Agent Usage".into()
+        "Agent Accounts & Usage".into()
     }
 
     fn tab_icon(&self, _window: &Window, _cx: &App) -> Option<Icon> {
@@ -977,4 +1044,39 @@ impl Render for AgentUsageView {
                     .child(self.render_history(cx)),
             )
     }
+}
+
+/// Asks, then moves the account's directory (its login and history) to the
+/// Trash and forgets it in settings.
+fn confirm_remove(account: AgentAccount, window: &mut Window, cx: &mut App) {
+    let answer = window.prompt(
+        PromptLevel::Warning,
+        &format!("Remove {}?", account.label()),
+        Some(&format!(
+            "{} moves to the Trash, with this account's login and history.",
+            account.home_label
+        )),
+        &["Move to Trash", "Cancel"],
+        cx,
+    );
+    let fs = <dyn Fs>::global(cx);
+    cx.spawn(async move |cx| {
+        if answer.await.ok() != Some(0) {
+            return anyhow::Ok(());
+        }
+        fs.trash(
+            &account.home,
+            RemoveOptions {
+                recursive: true,
+                ignore_if_not_exists: true,
+            },
+        )
+        .await?;
+        cx.update(|cx| {
+            AccountRegistry::forget(&account, cx);
+            AccountRegistry::refresh_now(cx);
+        });
+        Ok(())
+    })
+    .detach_and_log_err(cx);
 }
