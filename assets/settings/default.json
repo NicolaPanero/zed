@@ -2849,10 +2849,11 @@
     },
     "base_keymap": "VSCode",
     "buffer_font_family": "Menlo",
-    "buffer_font_size": 12,
+    // VS Code's sizes (12/13) are a little small next to Zed's denser UI.
+    "buffer_font_size": 13,
     "buffer_line_height": { "custom": 1.5 },
     "ui_font_family": ".SystemUIFont",
-    "ui_font_size": 13,
+    "ui_font_size": 14,
     "minimap": { "show": "always" },
     "current_line_highlight": "line",
     "colorize_brackets": true,
@@ -2860,7 +2861,7 @@
     // The terminal otherwise follows the editor's font and size.
     "terminal": {
       "font_family": "Menlo",
-      "font_size": 12,
+      "font_size": 13,
     },
     "tabs": {
       "file_icons": true,
@@ -2878,6 +2879,18 @@
     "outline_panel": { "dock": "left" },
     "git_panel": { "dock": "left" },
     "agent": { "dock": "right" },
+    "agent_buffer_font_size": 13,
+    // The agents this fork's accounts and hand-off support, ready in the
+    // agent panel's "+" menu.
+    "agent_servers": {
+      "claude-acp": {
+        "type": "registry",
+        "default_config_options": { "model": "sonnet", "effort": "low" },
+      },
+      "codex-acp": { "type": "registry" },
+      "cursor": { "type": "registry" },
+      "opencode": { "type": "registry" },
+    },
   },
   // Settings overrides to use when using Zed Nightly.
   // Mostly useful for developers who are managing multiple instances of Zed.
