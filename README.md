@@ -73,6 +73,14 @@ Zed's agent registry installs Grok Build (`grok-build`) through npm and starts i
 
 `default_config_options.model` is only needed when Grok runs on an API key for a model configured in `~/.grok/config.toml` (here `grok-4.7`): sessions continued from another agent otherwise reopen on Grok's default model, which needs a `grok login`. Any agent id containing "grok" gets Grok's accounts, quota and "Continue with…".
 
+### Threads
+
+Besides archiving, a thread's right-click menu in the threads sidebar has "Delete Permanently…": after confirming, the thread and the agent's saved session (in the account it ran with) are deleted. Archived threads can also be deleted from the archive view, as in Zed.
+
+### Looks like VS Code
+
+Release builds default to VS Code's look: the bundled "VS Code Dark Modern" and "VS Code Light Modern" themes following the system appearance, the VS Code keymap, Menlo at 12 px with 1.5 line height, the system UI font at 13 px, and the minimap. These are defaults only (the `preview` block of `assets/settings/default.json`), so anything in your own settings wins; the themes can also be picked in any build from the theme selector.
+
 ### Installing and updating
 
 On an Apple Silicon Mac, install or update the latest build from this fork's releases with:
