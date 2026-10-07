@@ -298,10 +298,20 @@ impl AgentPanel {
                     agent_id: source.agent.id(),
                     account: source.agent.account().cloned(),
                 }),
+                continued_in: None,
             },
             cx,
         )
         .detach_and_log_err(cx);
+        thread_accounts::record_continuation(source.thread_id, thread_id, cx);
+        // Going back to an agent the conversation already ran with: its old
+        // thread misses everything since, so the new one replaces it.
+        let superseded = thread_accounts::threads_superseded_by(source.thread_id, &target, cx);
+        ThreadMetadataStore::global(cx).update(cx, |store, cx| {
+            for thread_id in superseded {
+                store.archive(thread_id, None, cx);
+            }
+        });
 
         self.load_agent_thread(
             target,

@@ -27,7 +27,14 @@ pub struct ThreadAccountInfo {
     /// Set on threads created by continuing another thread.
     #[serde(default)]
     pub handoff_from: Option<HandoffSource>,
+    /// The thread this one was last continued in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continued_in: Option<String>,
 }
+
+/// Hand-off chains are short; the bound only guards against a cycle in
+/// corrupted records.
+const MAX_CHAIN_LENGTH: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HandoffSource {
@@ -50,11 +57,105 @@ struct RecentWrites(HashMap<ThreadId, ThreadAccountInfo>);
 
 impl Global for RecentWrites {}
 
-/// Names the agent and account a thread was continued from, if any.
+/// How a thread relates to the others of its conversation: "continued in
+/// Grok" when a newer thread carries it on, otherwise "from Claude Code →
+/// Codex", the threads it was continued from.
 pub fn handoff_label(thread_id: ThreadId, cx: &App) -> Option<SharedString> {
-    let source = read(thread_id, cx)?.handoff_from?;
-    let agent = Agent::with_account(source.agent_id, source.account);
-    Some(crate::agent_panel::thread_handoff::target_label(&agent, cx).into())
+    let info = read(thread_id, cx)?;
+    if let Some(latest) = latest_continuation(thread_id, &info, cx) {
+        return Some(format!("continued in {}", agent_label(latest, cx)).into());
+    }
+    let source = info.handoff_from?;
+    let mut labels: Vec<String> = handoff_ancestors(thread_id, cx)
+        .into_iter()
+        .map(|ancestor| agent_label(ancestor, cx))
+        .collect();
+    if labels.is_empty() {
+        // The source thread is gone; its record still names the agent.
+        let agent = Agent::with_account(source.agent_id, source.account);
+        labels.push(crate::agent_panel::thread_handoff::target_label(&agent, cx));
+    }
+    labels.reverse();
+    labels.dedup();
+    Some(format!("from {}", labels.join(" → ")).into())
+}
+
+fn agent_label(thread_id: ThreadId, cx: &App) -> String {
+    live_thread_agent(thread_id, cx)
+        .map(|agent| crate::agent_panel::thread_handoff::target_label(&agent, cx))
+        .unwrap_or_default()
+}
+
+/// The agent of a thread that is still listed (not archived or deleted).
+fn live_thread_agent(thread_id: ThreadId, cx: &App) -> Option<Agent> {
+    let metadata = crate::thread_metadata_store::ThreadMetadataStore::try_global(cx)?
+        .read(cx)
+        .entry(thread_id)?;
+    (!metadata.archived)
+        .then(|| agent_for_thread(Agent::from(metadata.agent_id.clone()), thread_id, cx))
+}
+
+/// The newest listed thread that carries this one on, if any.
+fn latest_continuation(
+    thread_id: ThreadId,
+    info: &ThreadAccountInfo,
+    cx: &App,
+) -> Option<ThreadId> {
+    let mut latest = None;
+    let mut next = info.continued_in.clone();
+    for _ in 0..MAX_CHAIN_LENGTH {
+        let Some(candidate) = next.as_deref().and_then(ThreadId::from_key_string) else {
+            break;
+        };
+        if candidate == thread_id || live_thread_agent(candidate, cx).is_none() {
+            break;
+        }
+        latest = Some(candidate);
+        next = read(candidate, cx).and_then(|info| info.continued_in);
+    }
+    latest
+}
+
+/// The listed threads this one was continued from, nearest first.
+fn handoff_ancestors(thread_id: ThreadId, cx: &App) -> Vec<ThreadId> {
+    let mut ancestors = Vec::new();
+    let mut visited = vec![thread_id];
+    let mut current = thread_id;
+    for _ in 0..MAX_CHAIN_LENGTH {
+        let Some(parent) = read(current, cx)
+            .and_then(|info| info.handoff_from)
+            .and_then(|source| source.source_thread_id())
+        else {
+            break;
+        };
+        if visited.contains(&parent) {
+            break;
+        }
+        visited.push(parent);
+        if live_thread_agent(parent, cx).is_some() {
+            ancestors.push(parent);
+        }
+        current = parent;
+    }
+    ancestors
+}
+
+/// Threads of the conversation `source` belongs to that already run with
+/// `target`: continuing with `target` again makes them stale copies.
+pub(crate) fn threads_superseded_by(source: ThreadId, target: &Agent, cx: &App) -> Vec<ThreadId> {
+    handoff_ancestors(source, cx)
+        .into_iter()
+        .filter(|ancestor| live_thread_agent(*ancestor, cx).as_ref() == Some(target))
+        .collect()
+}
+
+/// Records that `source` was continued in `continuation`.
+pub(crate) fn record_continuation(source: ThreadId, continuation: ThreadId, cx: &mut App) {
+    let info = ThreadAccountInfo {
+        continued_in: Some(continuation.to_key_string()),
+        ..read(source, cx).unwrap_or_default()
+    };
+    write(source, &info, cx).detach_and_log_err(cx);
 }
 
 pub fn read(thread_id: ThreadId, cx: &App) -> Option<ThreadAccountInfo> {
@@ -308,6 +409,100 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn continuing_back_to_an_agent_replaces_its_old_thread(cx: &mut TestAppContext) {
+        use crate::thread_metadata_store::{ThreadMetadata, ThreadMetadataStore};
+
+        init(cx);
+        cx.update(|cx| {
+            settings::init(cx);
+            ThreadMetadataStore::init_global(cx);
+        });
+        // Let the store finish loading before threads are added to it.
+        cx.run_until_parked();
+        let claude = Agent::from(AgentId::new("claude-acp"));
+        let codex = Agent::from(AgentId::new("codex-acp"));
+        let save = |agent: &Agent, cx: &mut TestAppContext| {
+            let thread_id = ThreadId::new();
+            let now = chrono::Utc::now();
+            let metadata = ThreadMetadata {
+                thread_id,
+                session_id: None,
+                agent_id: agent.id(),
+                title: None,
+                title_override: None,
+                updated_at: now,
+                created_at: Some(now),
+                interacted_at: Some(now),
+                worktree_paths: Default::default(),
+                remote_connection: None,
+                archived: false,
+            };
+            cx.update(|cx| {
+                ThreadMetadataStore::global(cx).update(cx, |store, cx| store.save(metadata, cx))
+            });
+            thread_id
+        };
+        let continue_with =
+            |source: ThreadId, target: ThreadId, agent: &Agent, cx: &mut TestAppContext| {
+                cx.update(|cx| {
+                    write(
+                        target,
+                        &ThreadAccountInfo {
+                            account: None,
+                            handoff_from: Some(HandoffSource {
+                                thread_id: source.to_key_string(),
+                                agent_id: agent.id(),
+                                account: None,
+                            }),
+                            continued_in: None,
+                        },
+                        cx,
+                    )
+                    .detach();
+                    record_continuation(source, target, cx);
+                });
+            };
+
+        let first_claude = save(&claude, cx);
+        let first_codex = save(&codex, cx);
+        continue_with(first_claude, first_codex, &claude, cx);
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(
+                handoff_label(first_claude, cx).as_deref(),
+                Some("continued in Codex")
+            );
+            assert_eq!(
+                handoff_label(first_codex, cx).as_deref(),
+                Some("from Claude Code")
+            );
+            assert!(threads_superseded_by(first_codex, &codex, cx).is_empty());
+            assert_eq!(
+                threads_superseded_by(first_codex, &claude, cx),
+                vec![first_claude]
+            );
+        });
+
+        let second_claude = save(&claude, cx);
+        continue_with(first_codex, second_claude, &codex, cx);
+        cx.update(|cx| {
+            ThreadMetadataStore::global(cx)
+                .update(cx, |store, cx| store.archive(first_claude, None, cx));
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(
+                handoff_label(first_codex, cx).as_deref(),
+                Some("continued in Claude Code")
+            );
+            assert_eq!(
+                handoff_label(second_claude, cx).as_deref(),
+                Some("from Codex")
+            );
+        });
+    }
+
+    #[gpui::test]
     async fn recording_the_account_keeps_the_handoff_source(cx: &mut TestAppContext) {
         init(cx);
         let thread_id = ThreadId::new();
@@ -323,6 +518,7 @@ mod tests {
                 &ThreadAccountInfo {
                     account: Some(account.clone()),
                     handoff_from: Some(source.clone()),
+                    continued_in: None,
                 },
                 cx,
             )
@@ -338,6 +534,7 @@ mod tests {
                 Some(ThreadAccountInfo {
                     account: Some(account),
                     handoff_from: Some(source),
+                    continued_in: None,
                 })
             );
         });

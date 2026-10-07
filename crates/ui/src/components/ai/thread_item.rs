@@ -109,7 +109,8 @@ impl ThreadItem {
         self
     }
 
-    /// Names the agent the conversation was continued from.
+    /// How the thread links to the threads its conversation was handed off
+    /// between, e.g. "from Claude Code" or "continued in Codex".
     pub fn handoff_from(mut self, label: impl Into<SharedString>) -> Self {
         self.handoff_from = Some(label.into());
         self
@@ -632,7 +633,7 @@ impl RenderOnce for ThreadItem {
                                             .color(Color::Muted),
                                     )
                                     .child(
-                                        Label::new(format!("from {label}"))
+                                        Label::new(label)
                                             .size(LabelSize::Small)
                                             .color(Color::Muted)
                                             .truncate(),
