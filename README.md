@@ -55,6 +55,19 @@ This is [NicolaPanero/zed](https://github.com/NicolaPanero/zed), a fork of Zed's
 
 Accounts are local only: they are hidden in remote projects.
 
+### Installing and updating
+
+On an Apple Silicon Mac, install or update the latest build from this fork's releases with:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/NicolaPanero/zed/main/script/install-fork.sh | sh
+```
+
+- The app is called **Zed Fork** and runs as Zed's "preview" channel, so it can sit next to an official Zed. Settings are shared and kept across updates (`~/.config/zed`).
+- It isn't notarized by Apple. Installed with the command above it opens normally; downloaded with a browser, open it once via System Settings → Privacy & Security → "Open Anyway".
+- When a newer build is out, the app offers "Update and Restart", which runs the same script. Zed's own updater is off in these builds.
+- A release workflow (`.github/workflows/fork_release.yml` on `main`) builds and publishes a new release whenever this branch changes.
+
 ### Building this fork
 
 Follow Zed's build guide below. On macOS:
