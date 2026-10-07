@@ -155,10 +155,7 @@ pub(crate) fn render_handoff_notice(thread_id: ThreadId, cx: &App) -> Option<Any
             .severity(Severity::Info)
             .icon(IconName::ArrowRight)
             .title(format!("Continued from {label}"))
-            .description(
-                "The earlier conversation was converted into this agent's own session, \
-                 so it has the full history. The original thread is unchanged.",
-            )
+            .description("This agent received the whole conversation so far.")
             .into_any_element(),
     )
 }

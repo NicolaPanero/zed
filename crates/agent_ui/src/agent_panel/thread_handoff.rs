@@ -29,7 +29,7 @@ use crate::account_registry::{
 };
 use crate::{
     Agent, AgentInitialContent, AgentThreadSource,
-    thread_accounts::{self, HandoffSource, ThreadAccountInfo},
+    thread_accounts::{self, HandoffSource},
     thread_metadata_store::{ThreadId, ThreadMetadata, ThreadMetadataStore, WorktreePaths},
 };
 use settings::Settings as _;
@@ -268,61 +268,25 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let thread_id = ThreadId::new();
-        let now = Utc::now();
-        let work_dirs = source.work_dirs.clone();
-        let metadata = ThreadMetadata {
-            thread_id,
-            session_id: Some(acp::SessionId::new(new_session_id)),
-            agent_id: target.id(),
-            title: source.title.clone(),
-            title_override: None,
-            updated_at: now,
-            created_at: Some(now),
-            interacted_at: Some(now),
-            worktree_paths: work_dirs
-                .as_ref()
-                .map(WorktreePaths::from_folder_paths)
-                .unwrap_or_default(),
-            remote_connection: None,
-            archived: false,
-        };
-        ThreadMetadataStore::global(cx).update(cx, |store, cx| store.save(metadata, cx));
-        // Written before the thread opens, so its account is already known.
-        thread_accounts::write(
-            thread_id,
-            &ThreadAccountInfo {
-                account: target.account().cloned(),
-                handoff_from: Some(HandoffSource {
-                    thread_id: source.thread_id.to_key_string(),
-                    agent_id: source.agent.id(),
-                    account: source.agent.account().cloned(),
-                }),
-                continued_in: None,
-            },
-            cx,
-        )
-        .detach_and_log_err(cx);
-        thread_accounts::record_continuation(source.thread_id, thread_id, cx);
-        // Going back to an agent the conversation already ran with: its old
-        // thread misses everything since, so the new one replaces it.
-        let superseded = thread_accounts::threads_superseded_by(source.thread_id, &target, cx);
-        ThreadMetadataStore::global(cx).update(cx, |store, cx| {
-            for thread_id in superseded {
-                store.archive(thread_id, None, cx);
-            }
-        });
-
-        self.load_agent_thread(
+        let source_agent = source.agent.clone();
+        let source_session_id = source.session_id.clone();
+        self.switch_thread_in_place(
+            source,
             target,
-            thread_id,
-            work_dirs,
-            source.title,
-            true,
-            AgentThreadSource::AgentPanel,
+            Some(acp::SessionId::new(new_session_id)),
+            None,
             window,
             cx,
         );
+        // The new session has the whole conversation; the old one would only
+        // be a stale copy in the source agent's store.
+        thread_accounts::delete_agent_session(
+            source_agent,
+            source_session_id,
+            &self.connection_store,
+            cx,
+        )
+        .detach_and_log_err(cx);
     }
 
     fn continue_with_transcript(
@@ -341,26 +305,100 @@ impl AgentPanel {
             acp::ContentBlock::Resource(acp::EmbeddedResource::new(
                 acp::EmbeddedResourceResource::TextResourceContents(
                     acp::TextResourceContents::new(
-                        source.markdown,
+                        source.markdown.clone(),
                         format!("zed:///agent/thread/{}", source.thread_id.to_key_string()),
                     ),
                 ),
             )),
         ];
-        self.external_thread(
-            Some(target),
+        // Sent right away: the thread now shows the new agent's session, so
+        // an unsent transcript would leave it looking empty. The source
+        // session is kept, as it is the only native copy of the conversation.
+        self.switch_thread_in_place(
+            source,
+            target,
             None,
-            source.work_dirs,
-            source.title,
             Some(AgentInitialContent::ContentBlock {
                 blocks,
-                auto_submit: false,
+                auto_submit: true,
             }),
+            window,
+            cx,
+        );
+    }
+
+    /// Moves the thread's conversation to `target` in the same thread: the
+    /// sidebar entry and the panel switch to the new agent's session.
+    fn switch_thread_in_place(
+        &mut self,
+        source: HandoffSourceThread,
+        target: Agent,
+        new_session_id: Option<acp::SessionId>,
+        initial_content: Option<AgentInitialContent>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let thread_id = source.thread_id;
+        let now = Utc::now();
+        let work_dirs = source.work_dirs.clone();
+        let existing = ThreadMetadataStore::global(cx)
+            .read(cx)
+            .entry(thread_id)
+            .cloned();
+        let metadata = match existing {
+            Some(existing) => ThreadMetadata {
+                session_id: new_session_id,
+                agent_id: target.id(),
+                updated_at: now,
+                interacted_at: Some(now),
+                archived: false,
+                ..existing
+            },
+            None => ThreadMetadata {
+                thread_id,
+                session_id: new_session_id,
+                agent_id: target.id(),
+                title: source.title.clone(),
+                title_override: None,
+                updated_at: now,
+                created_at: Some(now),
+                interacted_at: Some(now),
+                worktree_paths: work_dirs
+                    .as_ref()
+                    .map(WorktreePaths::from_folder_paths)
+                    .unwrap_or_default(),
+                remote_connection: None,
+                archived: false,
+            },
+        };
+        ThreadMetadataStore::global(cx).update(cx, |store, cx| store.save(metadata, cx));
+        // Written before the thread reopens, so its account is already known.
+        thread_accounts::record_switch(
+            thread_id,
+            HandoffSource {
+                thread_id: thread_id.to_key_string(),
+                agent_id: source.agent.id(),
+                account: source.agent.account().cloned(),
+            },
+            target.account().cloned(),
+            cx,
+        )
+        .detach_and_log_err(cx);
+
+        self.external_thread(
+            Some(target),
+            Some(thread_id),
+            work_dirs,
+            source.title,
+            initial_content,
             true,
             AgentThreadSource::AgentPanel,
             window,
             cx,
         );
+        // Replacing the view retained the old one under the same thread id;
+        // it still runs the source session, so drop it.
+        self.retained_threads.remove(&thread_id);
     }
 
     fn active_thread_is_generating(&self, cx: &App) -> bool {
