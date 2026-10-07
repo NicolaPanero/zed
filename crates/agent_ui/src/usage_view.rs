@@ -18,8 +18,8 @@ use project::{AgentId, Project};
 use ui::{Divider, Tooltip, prelude::*};
 use workspace::{Item, Workspace};
 
-use crate::AddAgentAccount;
 use crate::account_registry::{AccountRegistry, QuotaRegistry};
+use crate::add_account_modal::AddAgentAccount;
 
 /// Opens the agent usage page.
 #[derive(Clone, Default, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]

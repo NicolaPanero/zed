@@ -383,6 +383,16 @@ impl QuotaRegistry {
     }
 }
 
+/// Refreshes accounts and quota readings when a menu that lists them opens.
+pub fn refresh_for_menu(cx: &mut App) {
+    AccountRegistry::refresh_if_stale(cx);
+    let accounts: Vec<_> = AccountProvider::ALL
+        .iter()
+        .flat_map(|provider| AccountRegistry::accounts_for_agent(provider.agent_id(), cx))
+        .collect();
+    QuotaRegistry::refresh_if_stale(&accounts, cx);
+}
+
 /// Shows an account with its quota, e.g. "me@work.dev — Session (5h) 42%".
 pub fn account_label_with_quota(account: &AgentAccount, cx: &App) -> String {
     let mut label = account.label();

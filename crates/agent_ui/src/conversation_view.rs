@@ -162,18 +162,6 @@ pub(crate) enum ThreadError {
     },
 }
 
-impl ThreadError {
-    /// Whether the agent says its account ran out of quota or credits.
-    pub(crate) fn is_usage_limit(&self) -> bool {
-        match self {
-            Self::Other { message, .. } | Self::ProviderRejection { message } => {
-                agent_accounts::is_usage_limit_error(message)
-            }
-            _ => false,
-        }
-    }
-}
-
 impl From<anyhow::Error> for ThreadError {
     fn from(error: anyhow::Error) -> Self {
         if error.is::<MaxOutputTokensError>() {
@@ -4722,10 +4710,7 @@ pub(crate) mod tests {
                 ConversationView::new(
                     Rc::new(StubAgentServer::new(ResumeOnlyAgentConnection)),
                     connection_store,
-                    Agent::Custom {
-                        id: "Test".into(),
-                        account: None,
-                    },
+                    Agent::Custom { id: "Test".into() },
                     Some(acp::SessionId::new("resume-session")),
                     None,
                     None,
@@ -4860,10 +4845,7 @@ pub(crate) mod tests {
                 ConversationView::new(
                     Rc::new(StubAgentServer::new(RestoredAvailableCommandsConnection)),
                     connection_store,
-                    Agent::Custom {
-                        id: "Test".into(),
-                        account: None,
-                    },
+                    Agent::Custom { id: "Test".into() },
                     Some(acp::SessionId::new("restored-session")),
                     None,
                     None,
@@ -4944,10 +4926,7 @@ pub(crate) mod tests {
                 ConversationView::new(
                     Rc::new(StubAgentServer::new(connection)),
                     connection_store,
-                    Agent::Custom {
-                        id: "Test".into(),
-                        account: None,
-                    },
+                    Agent::Custom { id: "Test".into() },
                     Some(acp::SessionId::new("session-1")),
                     None,
                     Some(PathList::new(&[PathBuf::from("/project/subdir")])),
@@ -5085,10 +5064,7 @@ pub(crate) mod tests {
                 ConversationView::new(
                     Rc::new(server),
                     connection_store,
-                    Agent::Custom {
-                        id: "Flaky".into(),
-                        account: None,
-                    },
+                    Agent::Custom { id: "Flaky".into() },
                     Some(resume_session_id.clone()),
                     None,
                     None,
@@ -5429,10 +5405,7 @@ pub(crate) mod tests {
                 ConversationView::new(
                     Rc::new(StubAgentServer::default_response()),
                     connection_store,
-                    Agent::Custom {
-                        id: "Test".into(),
-                        account: None,
-                    },
+                    Agent::Custom { id: "Test".into() },
                     None,
                     None,
                     None,
@@ -5530,10 +5503,7 @@ pub(crate) mod tests {
                 ConversationView::new(
                     Rc::new(StubAgentServer::default_response()),
                     connection_store,
-                    Agent::Custom {
-                        id: "Test".into(),
-                        account: None,
-                    },
+                    Agent::Custom { id: "Test".into() },
                     None,
                     None,
                     None,
@@ -5608,10 +5578,7 @@ pub(crate) mod tests {
                 ConversationView::new(
                     Rc::new(StubAgentServer::default_response()),
                     connection_store,
-                    Agent::Custom {
-                        id: "Test".into(),
-                        account: None,
-                    },
+                    Agent::Custom { id: "Test".into() },
                     None,
                     None,
                     None,
@@ -5678,10 +5645,7 @@ pub(crate) mod tests {
                 ConversationView::new(
                     Rc::new(StubAgentServer::default_response()),
                     connection_store,
-                    Agent::Custom {
-                        id: "Test".into(),
-                        account: None,
-                    },
+                    Agent::Custom { id: "Test".into() },
                     None,
                     None,
                     None,
@@ -5802,10 +5766,7 @@ pub(crate) mod tests {
                 ConversationView::new(
                     Rc::new(StubAgentServer::new(RestoredAvailableCommandsConnection)),
                     connection_store,
-                    Agent::Custom {
-                        id: "Test".into(),
-                        account: None,
-                    },
+                    Agent::Custom { id: "Test".into() },
                     None,
                     None,
                     None,
@@ -6104,10 +6065,7 @@ pub(crate) mod tests {
         let connection_store =
             cx.update(|_window, cx| cx.new(|cx| AgentConnectionStore::new(project.clone(), cx)));
 
-        let agent_key = Agent::Custom {
-            id: "Test".into(),
-            account: None,
-        };
+        let agent_key = Agent::Custom { id: "Test".into() };
 
         let conversation_view = cx.update(|window, cx| {
             cx.new(|cx| {
@@ -7124,10 +7082,7 @@ pub(crate) mod tests {
                 ConversationView::new(
                     Rc::new(StubAgentServer::new(connection.as_ref().clone())),
                     connection_store,
-                    Agent::Custom {
-                        id: "Test".into(),
-                        account: None,
-                    },
+                    Agent::Custom { id: "Test".into() },
                     None,
                     None,
                     None,
@@ -7300,10 +7255,7 @@ pub(crate) mod tests {
                 ConversationView::new(
                     Rc::new(StubAgentServer::new(connection.as_ref().clone())),
                     connection_store,
-                    Agent::Custom {
-                        id: "Test".into(),
-                        account: None,
-                    },
+                    Agent::Custom { id: "Test".into() },
                     None,
                     None,
                     None,
@@ -12293,10 +12245,7 @@ pub(crate) mod tests {
                 ConversationView::new(
                     Rc::new(StubAgentServer::default_response()),
                     connection_store,
-                    Agent::Custom {
-                        id: "Test".into(),
-                        account: None,
-                    },
+                    Agent::Custom { id: "Test".into() },
                     None,
                     None,
                     None,

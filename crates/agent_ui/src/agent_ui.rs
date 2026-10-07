@@ -1,8 +1,3 @@
-mod account_registry;
-mod account_selector;
-mod add_account_modal;
-mod usage_view;
-pub use usage_view::OpenAgentUsage;
 mod agent_configuration;
 pub mod agent_connection_store;
 mod agent_diff;
@@ -34,7 +29,6 @@ mod terminal_inline_assistant;
 pub mod terminal_thread_metadata_store;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
-pub mod thread_accounts;
 mod thread_import;
 pub mod thread_metadata_store;
 pub mod thread_worktree_archive;
@@ -43,11 +37,18 @@ pub mod threads_archive_view;
 mod ui;
 mod unicode_confusables;
 
+// This fork's agent accounts and "Continue with…".
+mod account_registry;
+mod account_selector;
+mod add_account_modal;
+pub mod thread_accounts;
+mod usage_view;
+pub use usage_view::OpenAgentUsage;
+
 use std::rc::Rc;
 use std::sync::Arc;
 
 use ::ui::IconName;
-use agent_accounts::AccountId;
 use agent_client_protocol::schema::v1 as acp;
 use agent_settings::{AgentProfileId, AgentSettings};
 use command_palette_hooks::CommandPaletteFilter;
@@ -397,32 +398,6 @@ pub struct NewExternalAgentThread {
     /// The agent id to use for the conversation.
     #[serde(deserialize_with = "deserialize_external_agent_id")]
     agent: AgentId,
-    /// The provider account to run the agent with, as the path of its home
-    /// directory. Omitted for the default account.
-    #[serde(default)]
-    account: Option<AccountId>,
-}
-
-/// Adds a login profile for an agent and opens a thread to sign in with it.
-#[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]
-#[action(namespace = agent)]
-#[serde(deny_unknown_fields)]
-pub struct AddAgentAccount {
-    /// The agent to add an account for.
-    pub agent: AgentId,
-}
-
-/// Continues the active thread in a new thread with another agent or another
-/// account, carrying the conversation over.
-#[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]
-#[action(namespace = agent)]
-#[serde(deny_unknown_fields)]
-pub struct ContinueThreadWith {
-    /// The agent id to continue with.
-    pub agent: AgentId,
-    /// The provider account to continue with; omitted for the default account.
-    #[serde(default)]
-    pub account: Option<AccountId>,
 }
 
 fn deserialize_external_agent_id<'de, D>(deserializer: D) -> Result<AgentId, D::Error>
@@ -438,7 +413,8 @@ where
 
     match AgentIdOrLegacyAgent::deserialize(deserializer)? {
         AgentIdOrLegacyAgent::AgentId(agent_id) => Ok(agent_id),
-        AgentIdOrLegacyAgent::LegacyAgent(Agent::Custom { id, .. }) => Ok(id),
+        AgentIdOrLegacyAgent::LegacyAgent(Agent::Custom { id }) => Ok(id),
+        AgentIdOrLegacyAgent::LegacyAgent(Agent::CustomAccount { id, .. }) => Ok(id),
         AgentIdOrLegacyAgent::LegacyAgent(Agent::NativeAgent) => Ok(Agent::NativeAgent.id()),
         #[cfg(any(test, feature = "test-support"))]
         AgentIdOrLegacyAgent::LegacyAgent(Agent::Stub) => Ok(Agent::Stub.id()),
@@ -463,11 +439,13 @@ pub enum Agent {
     Custom {
         #[serde(rename = "name")]
         id: AgentId,
-        /// The provider account to run the agent with; `None` is the default
-        /// account. Part of the identity, so each account gets its own
-        /// agent process.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        account: Option<AccountId>,
+    },
+    /// An external agent run with one of its non-default accounts; `Custom`
+    /// runs the agent's default account.
+    CustomAccount {
+        #[serde(rename = "name")]
+        id: AgentId,
+        account: agent_accounts::AccountId,
     },
     #[cfg(any(test, feature = "test-support"))]
     Stub,
@@ -482,30 +460,16 @@ impl From<AgentId> for Agent {
         if id.as_ref() == "stub" {
             return Self::Stub;
         }
-        Self::Custom { id, account: None }
+        Self::Custom { id }
     }
 }
 
 impl Agent {
-    /// An external agent run with the given account.
-    pub fn with_account(id: AgentId, account: Option<AccountId>) -> Self {
-        match Self::from(id) {
-            Self::Custom { id, .. } => Self::Custom { id, account },
-            agent => agent,
-        }
-    }
-
-    pub fn account(&self) -> Option<&AccountId> {
-        match self {
-            Self::Custom { account, .. } => account.as_ref(),
-            _ => None,
-        }
-    }
-
     pub fn id(&self) -> AgentId {
         match self {
             Self::NativeAgent => agent::ZED_AGENT_ID.clone(),
-            Self::Custom { id, .. } => id.clone(),
+            Self::Custom { id } => id.clone(),
+            Self::CustomAccount { id, .. } => id.clone(),
             #[cfg(any(test, feature = "test-support"))]
             Self::Stub => "stub".into(),
         }
@@ -519,6 +483,7 @@ impl Agent {
         match self {
             Self::NativeAgent => "Zed Agent".into(),
             Self::Custom { id, .. } => id.0.clone(),
+            Self::CustomAccount { id, .. } => id.0.clone(),
             #[cfg(any(test, feature = "test-support"))]
             Self::Stub => "Stub Agent".into(),
         }
@@ -528,6 +493,7 @@ impl Agent {
         match self {
             Self::NativeAgent => None,
             Self::Custom { .. } => Some(IconName::Sparkle),
+            Self::CustomAccount { .. } => Some(IconName::Sparkle),
             #[cfg(any(test, feature = "test-support"))]
             Self::Stub => None,
         }
@@ -540,8 +506,12 @@ impl Agent {
     ) -> Rc<dyn agent_servers::AgentServer> {
         match self {
             Self::NativeAgent => Rc::new(agent::NativeAgentServer::new(fs, thread_store)),
-            Self::Custom { id: name, account } => Rc::new(
-                agent_servers::CustomAgentServer::new(name.clone()).with_account(account.clone()),
+            Self::Custom { id: name } => {
+                Rc::new(agent_servers::CustomAgentServer::new(name.clone()))
+            }
+            Self::CustomAccount { id, account } => Rc::new(
+                agent_servers::CustomAgentServer::new(id.clone())
+                    .with_account(Some(account.clone())),
             ),
             #[cfg(any(test, feature = "test-support"))]
             Self::Stub => Rc::new(crate::test_support::StubAgentServer::default_response()),
@@ -1319,42 +1289,8 @@ mod tests {
             serde_json::from_str::<Agent>(r#"{"Custom":{"name":"my-agent"}}"#).unwrap(),
             Agent::Custom {
                 id: "my-agent".into(),
-                account: None,
             },
         );
-    }
-
-    #[test]
-    fn test_agent_account_serialization() {
-        let agent = Agent::with_account(
-            AgentId::from("claude-acp"),
-            Some(AccountId::from("/Users/me/.claude-work")),
-        );
-        let json = serde_json::to_string(&agent).unwrap();
-        assert_eq!(
-            json,
-            r#"{"custom":{"name":"claude-acp","account":"/Users/me/.claude-work"}}"#
-        );
-        assert_eq!(serde_json::from_str::<Agent>(&json).unwrap(), agent);
-        // The default account keeps the previous format.
-        assert_eq!(
-            serde_json::to_string(&Agent::from(AgentId::from("claude-acp"))).unwrap(),
-            r#"{"custom":{"name":"claude-acp"}}"#
-        );
-        assert_eq!(
-            Agent::with_account(agent_ui_native_id(), Some(AccountId::from("/x"))),
-            Agent::NativeAgent
-        );
-
-        let action = serde_json::from_str::<NewExternalAgentThread>(
-            r#"{"agent":"codex-acp","account":"/Users/me/.codex-2"}"#,
-        )
-        .unwrap();
-        assert_eq!(action.account, Some(AccountId::from("/Users/me/.codex-2")));
-    }
-
-    fn agent_ui_native_id() -> AgentId {
-        agent::ZED_AGENT_ID.clone()
     }
 
     #[test]

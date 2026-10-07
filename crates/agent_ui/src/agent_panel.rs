@@ -37,7 +37,6 @@ use zed_actions::{
 
 use crate::ExpandMessageEditor;
 use crate::ManageProfiles;
-use crate::account_registry::{AccountRegistry, QuotaRegistry, account_label_with_quota};
 use crate::agent_connection_store::AgentConnectionStore;
 use crate::completion_provider::{AgentContextSelection, AgentContextSource};
 use crate::terminal_thread_metadata_store::{
@@ -46,8 +45,8 @@ use crate::terminal_thread_metadata_store::{
 };
 use crate::thread_metadata_store::{ThreadId, ThreadMetadataStore, ThreadMetadataStoreEvent};
 use crate::{
-    Agent, AgentInitialContent, AgentThreadSource, ContinueThreadWith, ExternalSourcePrompt,
-    NewExternalAgentThread, NewNativeAgentThreadFromSummary,
+    Agent, AgentInitialContent, AgentThreadSource, ExternalSourcePrompt, NewExternalAgentThread,
+    NewNativeAgentThreadFromSummary,
 };
 use crate::{
     AgentDiffPane, ConversationView, CopyThreadToClipboard, Follow, LoadThreadFromClipboard,
@@ -371,32 +370,17 @@ struct SerializedActiveThread {
     work_dirs: Option<SerializedPathList>,
 }
 
-mod thread_handoff;
-pub(crate) use thread_handoff::handoff_targets;
-pub(crate) use thread_handoff::target_label as handoff_target_label;
+pub(crate) mod thread_handoff;
 
 pub fn init(cx: &mut App) {
     cx.observe_new(
         |workspace: &mut Workspace, _window, _cx: &mut Context<Workspace>| {
-            crate::add_account_modal::register(workspace);
+            thread_handoff::register(workspace);
             workspace
                 .register_action(|workspace, _: &NewThread, window, cx| {
                     if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
                         panel.update(cx, |panel, cx| {
                             panel.new_thread_with_workspace(Some(workspace), window, cx)
-                        });
-                        workspace.focus_panel::<AgentPanel>(window, cx);
-                    }
-                })
-                .register_action(|workspace, action: &ContinueThreadWith, window, cx| {
-                    if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
-                        panel.update(cx, |panel, cx| {
-                            panel.continue_thread_with(
-                                action.agent.clone(),
-                                action.account.clone(),
-                                window,
-                                cx,
-                            )
                         });
                         workspace.focus_panel::<AgentPanel>(window, cx);
                     }
@@ -1147,7 +1131,6 @@ pub struct AgentPanel {
     retained_threads: HashMap<ThreadId, Entity<ConversationView>>,
     terminals: HashMap<TerminalId, AgentTerminal>,
     pending_terminal_spawn: Option<TerminalId>,
-    /// A running "Continue with…" transfer; dropping it cancels it.
     pending_handoff: Option<Task<()>>,
     #[cfg(test)]
     test_terminal_spawn_gate: Option<futures::channel::oneshot::Receiver<()>>,
@@ -1653,7 +1636,7 @@ impl AgentPanel {
     }
 
     fn should_restore_agent(&self, agent: &Agent, cx: &App) -> bool {
-        let Agent::Custom { id, .. } = agent else {
+        let (Agent::Custom { id } | Agent::CustomAccount { id, .. }) = agent else {
             return true;
         };
 
@@ -1939,9 +1922,7 @@ impl AgentPanel {
             return;
         }
 
-        let account = AccountRegistry::resolve(action.agent.as_ref(), action.account.clone(), cx);
-        let agent = Agent::with_account(action.agent.clone(), account);
-        self.selected_agent = self.agent_with_quota_left(agent, cx);
+        self.selected_agent = self.agent_for_new_thread(action.agent.clone().into(), cx);
         self.activate_new_thread(true, AgentThreadSource::AgentPanel, window, cx);
     }
 
@@ -2067,11 +2048,7 @@ impl AgentPanel {
         self.pending_terminal_spawn = Some(terminal_id);
         let terminal_working_directory = working_directory.clone();
         let init_command = Self::terminal_init_command(run_init_command, cx);
-        let account_env =
-            crate::thread_accounts::terminal_account(&terminal_id.to_key_string(), cx)
-                .map(|account| account.env())
-                .unwrap_or_default();
-        let terminal_task = self.create_terminal_shell(working_directory, account_env, cx);
+        let terminal_task = self.create_terminal_shell(working_directory, cx);
         let workspace = self.workspace.clone();
         let workspace_id = self.workspace_id;
         let project = self.project.downgrade();
@@ -2125,7 +2102,6 @@ impl AgentPanel {
     fn create_terminal_shell(
         &mut self,
         working_directory: Option<PathBuf>,
-        extra_env: HashMap<String, String>,
         cx: &mut Context<Self>,
     ) -> Task<Result<Entity<terminal::Terminal>>> {
         // A real shell ties the spawn's timing to the host, so a test that needs
@@ -2139,8 +2115,9 @@ impl AgentPanel {
             });
         }
 
+        let account_env = self.pending_terminal_account_env(cx);
         self.project.update(cx, |project, cx| {
-            project.create_terminal_shell_with_env(working_directory, extra_env, cx)
+            project.create_terminal_shell_with_env(working_directory, account_env, cx)
         })
     }
 
@@ -4534,12 +4511,7 @@ impl AgentPanel {
             ThreadMetadataStore::try_global(cx)
                 .and_then(|store| store.read(cx).entry(tid).and_then(|m| m.session_id.clone()))
         });
-        // A persisted thread must reopen with the account whose store holds
-        // its session.
-        let agent = match resume_thread_id {
-            Some(thread_id) => crate::thread_accounts::agent_for_thread(agent, thread_id, cx),
-            None => agent,
-        };
+        let agent = crate::thread_accounts::agent_for_resume(agent, resume_thread_id, cx);
         self.create_agent_thread_inner(
             agent,
             server_override,
@@ -4818,7 +4790,6 @@ impl agent::SiblingThreadHost for AgentPanelSiblingHost {
                     }
                     Some(Agent::Custom {
                         id: project::AgentId(id.to_string().into()),
-                        account: None,
                     })
                 }
             };
@@ -5619,11 +5590,7 @@ impl AgentPanel {
         let has_thread_messages = conversation_view.as_ref().is_some_and(|conversation_view| {
             conversation_view.read(cx).has_user_submitted_prompt(cx)
         });
-        let handoff_targets = if has_thread_messages {
-            self.handoff_targets(cx)
-        } else {
-            Vec::new()
-        };
+        let handoff_targets = self.handoff_targets_for_menu(has_thread_messages, cx);
 
         let has_auth_methods = match &self.base_view {
             BaseView::AgentThread { conversation_view } => {
@@ -5700,23 +5667,8 @@ impl AgentPanel {
                                     });
                                 }
 
-                                if !handoff_targets.is_empty() {
-                                    let handoff_targets = handoff_targets.clone();
-                                    menu =
-                                        menu.submenu("Continue with…", move |mut menu, _, _| {
-                                            for (target, label) in &handoff_targets {
-                                                menu = menu.action(
-                                                    label.clone(),
-                                                    Box::new(ContinueThreadWith {
-                                                        agent: target.id(),
-                                                        account: target.account().cloned(),
-                                                    }),
-                                                );
-                                            }
-                                            menu
-                                        });
-                                }
-
+                                menu =
+                                    thread_handoff::continue_with_submenu(menu, &handoff_targets);
                                 menu = menu.separator();
                             }
                         }
@@ -5864,21 +5816,16 @@ impl AgentPanel {
 
         let (selected_agent_custom_icon, selected_agent_label) = if showing_terminal {
             (None, SharedString::from("Terminal"))
-        } else if let Agent::Custom { id, .. } = &self.selected_agent {
+        } else if let Agent::Custom { id, .. } | Agent::CustomAccount { id, .. } =
+            &self.selected_agent
+        {
             let store = agent_server_store.read(cx);
             let icon = store.agent_icon(&id);
 
             let label = store
                 .agent_display_name(&id)
                 .unwrap_or_else(|| self.selected_agent.label());
-            let label = match self.selected_agent.account() {
-                Some(account) => format!(
-                    "{label} · {}",
-                    AccountRegistry::label(id.as_ref(), Some(account), cx)
-                )
-                .into(),
-                None => label,
-            };
+            let label = thread_handoff::label_with_account(label, &self.selected_agent, cx);
             (icon, label)
         } else {
             (None, self.selected_agent.label())
@@ -5889,7 +5836,6 @@ impl AgentPanel {
         > = {
             let selected_agent = self.selected_agent.clone();
             let is_agent_selected = move |agent: Agent| selected_agent == agent;
-            let is_local_project = self.project.read(cx).is_local();
 
             let workspace = self.workspace.clone();
             let is_via_collab = workspace
@@ -5902,16 +5848,7 @@ impl AgentPanel {
             let agent_server_store = agent_server_store;
 
             Rc::new(move |window, cx| {
-                AccountRegistry::refresh_if_stale(cx);
-                if is_local_project {
-                    let accounts: Vec<_> = agent_accounts::AccountProvider::ALL
-                        .iter()
-                        .flat_map(|provider| {
-                            AccountRegistry::accounts_for_agent(provider.agent_id(), cx)
-                        })
-                        .collect();
-                    QuotaRegistry::refresh_if_stale(&accounts, cx);
-                }
+                crate::account_registry::refresh_for_menu(cx);
                 Some(ContextMenu::build(window, cx, |menu, _window, cx| {
                     menu.context(focus_handle.clone())
                         .item(
@@ -5978,58 +5915,6 @@ impl AgentPanel {
                             )
                         })
                         .map(|mut menu| {
-                            // Terminals whose shell uses a non-default account.
-                            if !supports_terminal || !is_local_project {
-                                return menu;
-                            }
-                            for provider in agent_accounts::AccountProvider::ALL {
-                                let agent_id = provider.agent_id();
-                                for account in AccountRegistry::accounts_for_agent(agent_id, cx) {
-                                    let Some(account_id) = account.id() else {
-                                        continue;
-                                    };
-                                    let provider =
-                                        agent_accounts::AccountProvider::for_agent(agent_id)
-                                            .map(|provider| provider.display_name())
-                                            .unwrap_or(agent_id);
-                                    let workspace = workspace.clone();
-                                    menu = menu.item(
-                                        ContextMenuEntry::new(format!(
-                                            "Terminal · {provider} · {}",
-                                            account.label()
-                                        ))
-                                        .icon(IconName::Terminal)
-                                        .icon_color(Color::Muted)
-                                        .disabled(is_via_collab)
-                                        .handler(
-                                            move |window, cx| {
-                                                let Some(workspace) = workspace.upgrade() else {
-                                                    return;
-                                                };
-                                                let account_id = account_id.clone();
-                                                workspace.update(cx, |workspace, cx| {
-                                                    if let Some(panel) =
-                                                        workspace.panel::<AgentPanel>(cx)
-                                                    {
-                                                        panel.update(cx, |panel, cx| {
-                                                            panel.new_terminal_with_account(
-                                                                Some(workspace),
-                                                                agent_id.into(),
-                                                                account_id,
-                                                                window,
-                                                                cx,
-                                                            );
-                                                        });
-                                                    }
-                                                });
-                                            },
-                                        ),
-                                    );
-                                }
-                            }
-                            menu
-                        })
-                        .map(|mut menu| {
                             let agent_server_store = agent_server_store.read(cx);
                             let registry_store = project::AgentRegistryStore::try_global(cx);
                             let registry_store_ref = registry_store.as_ref().map(|s| s.read(cx));
@@ -6062,32 +5947,8 @@ impl AgentPanel {
                             if !agent_items.is_empty() {
                                 menu = menu.separator().header("External Agents");
                             }
-                            for (item, account, label) in agent_items.iter().flat_map(|item| {
-                                // Agents with several provider accounts get one
-                                // entry per account.
-                                let accounts = if is_local_project {
-                                    AccountRegistry::accounts_for_agent(item.id.as_ref(), cx)
-                                } else {
-                                    Vec::new()
-                                };
-                                if accounts.len() > 1 {
-                                    accounts
-                                        .into_iter()
-                                        .map(|account| {
-                                            let label: SharedString = format!(
-                                                "{} · {}",
-                                                item.display_name,
-                                                account_label_with_quota(&account, cx)
-                                            )
-                                            .into();
-                                            (item, Some(account.selection()), label)
-                                        })
-                                        .collect::<Vec<_>>()
-                                } else {
-                                    vec![(item, None, item.display_name.clone())]
-                                }
-                            }) {
-                                let mut entry = ContextMenuEntry::new(label);
+                            for item in &agent_items {
+                                let mut entry = ContextMenuEntry::new(item.display_name.clone());
 
                                 let icon_path =
                                     agent_server_store.agent_icon(&item.id).or_else(|| {
@@ -6108,9 +5969,6 @@ impl AgentPanel {
                                         !showing_terminal
                                             && is_agent_selected(Agent::Custom {
                                                 id: item.id.clone(),
-                                                account: account
-                                                    .clone()
-                                                    .filter(|account| !account.is_system()),
                                             }),
                                         |this| this.action(Box::new(NewThread)),
                                     )
@@ -6119,7 +5977,6 @@ impl AgentPanel {
                                     .handler({
                                         let workspace = workspace.clone();
                                         let agent_id = item.id.clone();
-                                        let account = account.clone();
                                         move |window, cx| {
                                             if let Some(workspace) = workspace.upgrade() {
                                                 workspace.update(cx, |workspace, cx| {
@@ -6130,7 +5987,6 @@ impl AgentPanel {
                                                             panel.new_external_agent_thread(
                                                                 &NewExternalAgentThread {
                                                                     agent: agent_id.clone(),
-                                                                    account: account.clone(),
                                                                 },
                                                                 window,
                                                                 cx,
@@ -6148,36 +6004,13 @@ impl AgentPanel {
                             menu
                         })
                         .map(|menu| {
-                            let agent_server_store = agent_server_store.read(cx);
-                            let mut targets: Vec<(AgentId, SharedString)> = agent_server_store
-                                .external_agents()
-                                .filter(|agent_id| {
-                                    agent_accounts::AccountProvider::for_agent(agent_id.as_ref())
-                                        .is_some()
-                                })
-                                .map(|agent_id| {
-                                    let name = agent_server_store
-                                        .agent_display_name(agent_id)
-                                        .unwrap_or_else(|| agent_id.0.clone());
-                                    (agent_id.clone(), name)
-                                })
-                                .collect();
-                            if targets.is_empty() || !is_local_project {
-                                return menu;
-                            }
-                            targets.sort_by_key(|(_, name)| name.to_lowercase());
-                            menu.separator()
-                                .submenu("Add Account", move |mut menu, _, _| {
-                                    for (agent_id, name) in &targets {
-                                        menu = menu.action(
-                                            name.clone(),
-                                            Box::new(crate::AddAgentAccount {
-                                                agent: agent_id.clone(),
-                                            }),
-                                        );
-                                    }
-                                    menu
-                                })
+                            thread_handoff::account_menu_entries(
+                                menu,
+                                &workspace,
+                                &agent_server_store,
+                                is_via_collab,
+                                cx,
+                            )
                         })
                         .separator()
                         .item(
@@ -6788,7 +6621,6 @@ impl AgentPanel {
     ) {
         let ext_agent = Agent::Custom {
             id: server.agent_id(),
-            account: None,
         };
 
         let thread = self.create_agent_thread_with_server(
@@ -6819,7 +6651,6 @@ impl AgentPanel {
     ) {
         let ext_agent = Agent::Custom {
             id: server.agent_id(),
-            account: None,
         };
 
         // The panel addresses threads by `ThreadId` after the draft work;
@@ -6865,7 +6696,6 @@ impl AgentPanel {
     ) {
         let ext_agent = Agent::Custom {
             id: server.agent_id(),
-            account: None,
         };
         let thread = self.create_agent_thread_with_server(
             ext_agent,
@@ -7587,7 +7417,6 @@ mod tests {
         panel_b.update(cx, |panel, _cx| {
             panel.selected_agent = Agent::Custom {
                 id: "claude-acp".into(),
-                account: None,
             };
         });
 
@@ -7647,8 +7476,7 @@ mod tests {
             assert_eq!(
                 panel.selected_agent,
                 Agent::Custom {
-                    id: "claude-acp".into(),
-                    account: None,
+                    id: "claude-acp".into()
                 },
                 "workspace B agent type should be restored"
             );
@@ -9353,7 +9181,6 @@ mod tests {
         // serialize.
         let other_agent = Agent::Custom {
             id: "other-agent".into(),
-            account: None,
         };
         panel.update(cx, |panel, _cx| {
             panel.selected_agent = other_agent.clone();
@@ -9442,7 +9269,6 @@ mod tests {
             panel.new_external_agent_thread(
                 &NewExternalAgentThread {
                     agent: AgentId::new("external-agent"),
-                    account: None,
                 },
                 window,
                 cx,
@@ -11665,7 +11491,6 @@ mod tests {
             serde_json::from_str::<Agent>(r#"{"Custom":{"name":"my-agent"}}"#).unwrap(),
             Agent::Custom {
                 id: "my-agent".into(),
-                account: None,
             },
         );
 
@@ -11684,7 +11509,6 @@ mod tests {
             serde_json::from_str::<Agent>(r#"{"custom":{"name":"my-agent"}}"#).unwrap(),
             Agent::Custom {
                 id: "my-agent".into(),
-                account: None,
             },
         );
 
@@ -11695,8 +11519,7 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_string(&Agent::Custom {
-                id: "my-agent".into(),
-                account: None,
+                id: "my-agent".into()
             })
             .unwrap(),
             r#"{"custom":{"name":"my-agent"}}"#,
@@ -11933,7 +11756,6 @@ mod tests {
 
         let custom_agent = Agent::Custom {
             id: "my-preferred-agent".into(),
-            account: None,
         };
         cx.update(|cx| install_custom_agent("my-preferred-agent", cx));
 
@@ -11993,7 +11815,6 @@ mod tests {
             kvp,
             Agent::Custom {
                 id: "uninstalled-agent".into(),
-                account: None,
             },
         )
         .await;
@@ -12047,7 +11868,6 @@ mod tests {
 
         let global_agent = Agent::Custom {
             id: "global-agent".into(),
-            account: None,
         };
         let kvp = cx.update(|cx| KeyValueStore::global(cx));
         write_global_last_used_agent(kvp, global_agent.clone()).await;
@@ -12072,7 +11892,6 @@ mod tests {
         panel.update(cx, |panel, cx| {
             panel.selected_agent = Agent::Custom {
                 id: "workspace-agent".into(),
-                account: None,
             };
             panel.serialize(cx);
         });
@@ -12133,7 +11952,6 @@ mod tests {
         panel_a.update(cx, |panel, _cx| {
             panel.selected_agent = Agent::Custom {
                 id: "my-custom-agent".into(),
-                account: None,
             };
         });
 
@@ -12217,8 +12035,7 @@ mod tests {
             assert_eq!(
                 *conversation_view.read(cx).agent_key(),
                 Agent::Custom {
-                    id: external_agent_id.clone(),
-                    account: None,
+                    id: external_agent_id.clone()
                 },
                 "a restored thread should keep its original agent"
             );
@@ -12342,7 +12159,6 @@ mod tests {
 
         let expected_agent = Agent::Custom {
             id: "my-configured-agent".into(),
-            account: None,
         };
 
         panel.read_with(cx, |panel, cx| {
@@ -12397,11 +12213,9 @@ mod tests {
 
         let agent_a = Agent::Custom {
             id: "agent-alpha".into(),
-            account: None,
         };
         let agent_b = Agent::Custom {
             id: "agent-beta".into(),
-            account: None,
         };
         cx.update(|_window, cx| {
             install_custom_agent("agent-alpha", cx);
@@ -12486,7 +12300,6 @@ mod tests {
 
         let custom_agent = Agent::Custom {
             id: "my-custom-agent".into(),
-            account: None,
         };
 
         let panel = workspace.update_in(cx, |workspace, window, cx| {
@@ -12569,7 +12382,6 @@ mod tests {
         // The stale NativeAgent draft should be replaced.
         let custom_agent = Agent::Custom {
             id: "my-custom-agent".into(),
-            account: None,
         };
         panel.update_in(cx, |panel, window, cx| {
             panel.selected_agent = custom_agent.clone();
@@ -12976,7 +12788,6 @@ mod tests {
         // should become active.
         cx.dispatch_action(NewExternalAgentThread {
             agent: Agent::Stub.id(),
-            account: None,
         });
         cx.run_until_parked();
 
@@ -13321,10 +13132,7 @@ mod tests {
     async fn test_selected_agent_syncs_when_navigating_between_threads(cx: &mut TestAppContext) {
         let (panel, mut cx) = setup_panel(cx).await;
 
-        let stub_agent = Agent::Custom {
-            id: "Test".into(),
-            account: None,
-        };
+        let stub_agent = Agent::Custom { id: "Test".into() };
 
         // Open thread A and send a message so it is retained.
         let connection_a = StubAgentConnection::new();
@@ -13344,7 +13152,6 @@ mod tests {
         // Open thread B with a different agent — thread A goes to retained.
         let custom_agent = Agent::Custom {
             id: "my-custom-agent".into(),
-            account: None,
         };
         let connection_b = StubAgentConnection::new()
             .with_agent_id("my-custom-agent".into())
@@ -14362,7 +14169,6 @@ mod tests {
         // call.
         let override_agent = Agent::Custom {
             id: "override-agent".into(),
-            account: None,
         };
         let override_id = panel.update_in(&mut cx, |panel, window, cx| {
             panel.create_thread_with_options(
