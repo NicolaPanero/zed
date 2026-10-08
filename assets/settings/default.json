@@ -2880,17 +2880,6 @@
     "git_panel": { "dock": "left" },
     "agent": { "dock": "right" },
     "agent_buffer_font_size": 13,
-    // The agents this fork's accounts and hand-off support, ready in the
-    // agent panel's "+" menu.
-    "agent_servers": {
-      "claude-acp": {
-        "type": "registry",
-        "default_config_options": { "model": "sonnet", "effort": "low" },
-      },
-      "codex-acp": { "type": "registry" },
-      "cursor": { "type": "registry" },
-      "opencode": { "type": "registry" },
-    },
   },
   // Settings overrides to use when using Zed Nightly.
   // Mostly useful for developers who are managing multiple instances of Zed.
