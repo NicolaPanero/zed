@@ -81,7 +81,7 @@ Besides archiving, a thread's right-click menu in the threads sidebar has "Delet
 
 ### Looks like VS Code
 
-Release builds default to VS Code's look: the bundled "VS Code Dark Modern" and "VS Code Light Modern" themes following the system appearance, the VS Code keymap, Menlo at 12 px with 1.5 line height, the system UI font at 13 px, the minimap, and a Menlo 12 px terminal (Zed's terminal otherwise follows the editor's font size). These are defaults only (the `preview` block of `assets/settings/default.json`), so anything in your own settings wins; the themes can also be picked in any build from the theme selector.
+Release builds default to VS Code's look and layout: the bundled "VS Code Dark Modern" and "VS Code Light Modern" themes following the system appearance (with VS Code's bracket pair colors), the VS Code keymap, Menlo at 12 px with 1.5 line height, the system UI font at 13 px, a Menlo 12 px terminal (Zed's terminal otherwise follows the editor's font size), the minimap, sticky scroll, colored brackets, a current-line highlight without the gutter, file icons and git colors in tabs, and VS Code's layout: files, outline and source control docked on the left with a compact, chevron-style file tree, and the AI chat on the right. These are defaults only (the `preview` block of `assets/settings/default.json`), so anything in your own settings wins; the themes can also be picked in any build from the theme selector.
 
 ### Installing and updating
 

@@ -2854,11 +2854,30 @@
     "ui_font_family": ".SystemUIFont",
     "ui_font_size": 13,
     "minimap": { "show": "always" },
+    "current_line_highlight": "line",
+    "colorize_brackets": true,
+    "sticky_scroll": { "enabled": true },
     // The terminal otherwise follows the editor's font and size.
     "terminal": {
       "font_family": "Menlo",
       "font_size": 12,
     },
+    "tabs": {
+      "file_icons": true,
+      "git_status": true,
+      "show_diagnostics": "all",
+    },
+    // VS Code's layout: files, outline and source control on the left, the
+    // AI chat on the right.
+    "project_panel": {
+      "dock": "left",
+      "entry_spacing": "standard",
+      "folder_indicator": "chevron",
+      "indent_size": 12,
+    },
+    "outline_panel": { "dock": "left" },
+    "git_panel": { "dock": "left" },
+    "agent": { "dock": "right" },
   },
   // Settings overrides to use when using Zed Nightly.
   // Mostly useful for developers who are managing multiple instances of Zed.
