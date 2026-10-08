@@ -414,11 +414,15 @@ impl RenderOnce for ThreadItem {
 
         let has_worktree = !linked_worktrees.is_empty();
 
+        // This fork shows a lone timestamp beside the title, so the row
+        // keeps to one line.
+        let inline_timestamp = has_timestamp
+            && !(has_project_name || has_project_paths || has_worktree || has_diff_stats);
         let has_metadata = has_project_name
             || has_project_paths
             || has_worktree
             || has_diff_stats
-            || has_timestamp;
+            || (has_timestamp && !inline_timestamp);
 
         v_flex()
             .id(self.id.clone())
@@ -457,6 +461,13 @@ impl RenderOnce for ThreadItem {
                     )
                     .when(self.is_truncated && opaque_window, |this| {
                         this.child(gradient_overlay)
+                    })
+                    .when(inline_timestamp && !self.hovered, |this| {
+                        this.child(
+                            Label::new(timestamp.clone())
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
+                        )
                     })
                     .when(self.hovered, |this| {
                         this.when_some(self.action_slot, |this, slot| {
