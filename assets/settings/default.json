@@ -2848,6 +2848,9 @@
       "dark": "VS Code Dark Modern",
     },
     "base_keymap": "VSCode",
+    // VS Code's file icons (Seti), from Zed's extension store.
+    "icon_theme": "Seti Icon Theme",
+    "auto_install_extensions": { "seti-icons": true },
     "buffer_font_family": "Menlo",
     // VS Code's sizes (12/13) are a little small next to Zed's denser UI.
     "buffer_font_size": 13,
