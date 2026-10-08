@@ -26,9 +26,21 @@ use crate::{
     theme_preview::{ThemePreviewStyle, ThemePreviewTile},
 };
 
-const LIGHT_THEMES: [&str; 3] = ["One Light", "Ayu Light", "Gruvbox Light"];
-const DARK_THEMES: [&str; 3] = ["One Dark", "Ayu Dark", "Gruvbox Dark"];
-const FAMILY_NAMES: [SharedString; 3] = [
+// This fork offers its VS Code themes first.
+const LIGHT_THEMES: [&str; 4] = [
+    "VS Code Light Modern",
+    "One Light",
+    "Ayu Light",
+    "Gruvbox Light",
+];
+const DARK_THEMES: [&str; 4] = [
+    "VS Code Dark Modern",
+    "One Dark",
+    "Ayu Dark",
+    "Gruvbox Dark",
+];
+const FAMILY_NAMES: [SharedString; 4] = [
+    SharedString::new_static("VS Code"),
     SharedString::new_static("One"),
     SharedString::new_static("Ayu"),
     SharedString::new_static("Gruvbox"),
@@ -103,7 +115,7 @@ fn render_theme_section(tab_index: &mut isize, cx: &mut App) -> impl IntoElement
         tab_index: &mut isize,
         theme_selection: &ThemeSelection,
         cx: &mut App,
-    ) -> [impl IntoElement; 3] {
+    ) -> [impl IntoElement; 4] {
         let system_appearance = SystemAppearance::global(cx);
         let theme_registry = ThemeRegistry::global(cx);
 
@@ -128,7 +140,7 @@ fn render_theme_section(tab_index: &mut isize, cx: &mut App) -> impl IntoElement
 
         let themes = theme_names.map(|theme| theme_registry.get(theme).unwrap());
 
-        [0, 1, 2].map(|index| {
+        [0, 1, 2, 3].map(|index| {
             let theme = &themes[index];
             let is_selected = theme.name == current_theme_name;
             let name = theme.name.clone();
