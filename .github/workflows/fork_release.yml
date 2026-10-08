@@ -82,9 +82,11 @@ jobs:
         This build of Zed comes from github.com/NicolaPanero/zed and updates
         itself from there: it tells you when a newer build is available.
       TARGET: aarch64-apple-darwin
-      # Bundled so "Continue with…" works without installing txcript.
-      TXCRIPT_REPOSITORY: https://github.com/skillsynchq/txcript.git
-      TXCRIPT_TAG: v0.14.4
+      # Bundled so "Continue with…" works without installing txcript. The
+      # owner's fork of txcript writes Cursor chats Cursor's agent accepts
+      # (official 0.14.4 omits the time zone Cursor requires).
+      TXCRIPT_REPOSITORY: https://github.com/NicolaPanero/txcript.git
+      TXCRIPT_TAG: v0.14.4-fork.4
     steps:
       - uses: actions/checkout@v4
         with:
@@ -100,7 +102,7 @@ jobs:
         run: |
           cargo install txcript-cli --git "$TXCRIPT_REPOSITORY" --tag "$TXCRIPT_TAG" \
             --locked --root "$RUNNER_TEMP/txcript"
-          curl -fsSL "https://raw.githubusercontent.com/skillsynchq/txcript/$TXCRIPT_TAG/LICENSE" \
+          curl -fsSL "https://raw.githubusercontent.com/NicolaPanero/txcript/$TXCRIPT_TAG/LICENSE" \
             -o "$RUNNER_TEMP/txcript/LICENSE"
           "$RUNNER_TEMP/txcript/bin/txcript" --version
 
