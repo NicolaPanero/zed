@@ -109,8 +109,8 @@ impl ThreadItem {
         self
     }
 
-    /// How the thread links to the threads its conversation was handed off
-    /// between, e.g. "from Claude Code" or "continued in Codex".
+    /// The agents the thread's conversation went through, shown as its
+    /// tooltip, e.g. "from Claude Code → Codex".
     pub fn handoff_from(mut self, label: impl Into<SharedString>) -> Self {
         self.handoff_from = Some(label.into());
         self
@@ -427,13 +427,11 @@ impl RenderOnce for ThreadItem {
 
         let has_worktree = !linked_worktrees.is_empty();
 
-        let handoff_from = self.handoff_from;
         let has_metadata = has_project_name
             || has_project_paths
             || has_worktree
             || has_diff_stats
-            || has_timestamp
-            || handoff_from.is_some();
+            || has_timestamp;
 
         v_flex()
             .id(self.id.clone())
@@ -614,34 +612,13 @@ impl RenderOnce for ThreadItem {
                                     .size(LabelSize::Small)
                                     .color(Color::Muted),
                             )
-                        })
-                        .when_some(handoff_from, |this, label| {
-                            this.when(
-                                has_project_name
-                                    || has_project_paths
-                                    || has_worktree
-                                    || has_diff_stats
-                                    || has_timestamp,
-                                |this| this.child(dot_separator()),
-                            )
-                            .child(
-                                h_flex()
-                                    .gap_0p5()
-                                    .child(
-                                        Icon::new(IconName::ArrowRight)
-                                            .size(IconSize::XSmall)
-                                            .color(Color::Muted),
-                                    )
-                                    .child(
-                                        Label::new(label)
-                                            .size(LabelSize::Small)
-                                            .color(Color::Muted)
-                                            .truncate(),
-                                    ),
-                            )
                         }),
                 )
             })
+            .when_some(
+                self.handoff_from.filter(|_| !show_tooltip),
+                |this, label| this.tooltip(Tooltip::text(label)),
+            )
             .when(show_tooltip, |this| {
                 let status = self.status;
                 this.tooltip(Tooltip::element(move |_, _| match status {

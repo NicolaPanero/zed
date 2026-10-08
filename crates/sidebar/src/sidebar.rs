@@ -1,5 +1,6 @@
 mod thread_delete;
 mod thread_switcher;
+mod workspace_badge;
 
 use acp_thread::ThreadStatus;
 use action_log::DiffStats;
@@ -2345,6 +2346,7 @@ impl Sidebar {
         let opaque_window =
             cx.theme().window_background_appearance() == WindowBackgroundAppearance::Opaque;
 
+        let badge = workspace_badge::workspace_badge(label, cx);
         let label = if highlight_positions.is_empty() {
             Label::new(label.clone())
                 .when(!is_active, |this| this.color(Color::Muted))
@@ -2405,6 +2407,7 @@ impl Sidebar {
                     .min_w_0()
                     .w_full()
                     .gap_1()
+                    .child(badge)
                     .child(label)
                     .when_some(
                         self.render_remote_project_icon(ix, host.as_ref()),
