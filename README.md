@@ -25,7 +25,7 @@ This is [NicolaPanero/zed](https://github.com/NicolaPanero/zed), a fork of Zed's
 
 ### Continue with…
 
-- The account picker under the message editor ("Continue with agent") or the agent panel's "…" → "Continue with…" moves the current conversation to another agent or account.
+- The account picker under the message editor ("Continue with account" and "Continue with agent") moves the current conversation to another account or agent.
 - The conversation is converted with the `txcript` CLI (the fork's build is bundled in release builds; otherwise it must be on your `PATH`) into the target agent's own session store, then reopened there, so the agent really has the history.
 - Native transfer works for Claude Code, Codex, Grok, OpenCode and Cursor. If `txcript` fails, the transcript is sent as the first message instead.
 - **Cursor** keeps two stores for the same chats: its CLI's (`~/.cursor/chats`), which txcript reads and writes, and its ACP agent's (`~/.cursor/acp-sessions`), which Zed's Cursor chats use. The hand-off copies a chat between them, as Superset does. It also needs [the owner's txcript fork](https://github.com/NicolaPanero/txcript) (bundled in release builds): official txcript 0.14.4 writes Cursor chats without the time zone Cursor requires, so Cursor's agent fails on the first message. With another txcript, Cursor gets the transcript instead.
