@@ -42,6 +42,19 @@ pub async fn transfer(request: TransferRequest) -> Result<String> {
     let txcript = find_txcript(&request.shell_env).context(
         "txcript was not found in your shell PATH; install it to continue conversations in another agent",
     )?;
+    let involves_cursor =
+        [request.source.provider, request.target.provider].contains(&AccountProvider::Cursor);
+    if involves_cursor {
+        ensure_cursor_support(&txcript, &request).await?;
+    }
+    if request.source.provider == AccountProvider::Cursor {
+        // Zed's Cursor chats live in the ACP store; txcript reads the CLI's.
+        cursor_store::copy_acp_session_to_cli(
+            &cursor_root(&request.source),
+            &request.source_session_id,
+        )
+        .context("copying the Cursor chat for txcript")?;
+    }
     let document_dir = tempfile::tempdir().context("creating a temporary directory")?;
     let document = document_dir.path().join("session.simple.md");
 
@@ -82,12 +95,154 @@ pub async fn transfer(request: TransferRequest) -> Result<String> {
     .await
     .context("writing the conversation for the target agent")?;
 
-    parse_new_session_id(&continue_output, &request.source_session_id).ok_or_else(|| {
-        anyhow!(
-            "txcript did not report the new session id: {}",
-            continue_output.trim()
+    let new_session_id = parse_new_session_id(&continue_output, &request.source_session_id)
+        .ok_or_else(|| {
+            anyhow!(
+                "txcript did not report the new session id: {}",
+                continue_output.trim()
+            )
+        })?;
+    if request.target.provider == AccountProvider::Cursor {
+        // txcript prints where it wrote the chat; the directory is keyed by
+        // the conversation's cwd, which may differ from the one it ran in.
+        let written = continue_output
+            .split_whitespace()
+            .filter(|token| token.ends_with("/store.db") && token.contains(&new_session_id))
+            .find_map(|token| Path::new(token).parent().map(Path::to_path_buf));
+        cursor_store::copy_cli_session_to_acp(
+            &cursor_root(&request.target),
+            &new_session_id,
+            &request.cwd,
+            written,
         )
-    })
+        .context("making the Cursor chat available to Cursor's agent")?;
+    }
+    Ok(new_session_id)
+}
+
+/// Official txcript 0.14.4 writes Cursor chats without the time zone Cursor
+/// requires, so Cursor's agent fails on the first message. The fork's build
+/// (`NicolaPanero/txcript`, bundled in release builds) fixes that and says so
+/// in its version.
+async fn ensure_cursor_support(txcript: &Path, request: &TransferRequest) -> Result<()> {
+    let output = run_step(
+        txcript,
+        &["--version".as_ref()],
+        &request.cwd,
+        &request.shell_env,
+    )
+    .await?;
+    if output.contains("-fork.") {
+        return Ok(());
+    }
+    bail!(
+        "{} can't write Cursor chats that Cursor accepts ({}); use the txcript bundled \
+         with this fork's builds",
+        txcript.display(),
+        output.trim()
+    )
+}
+
+/// Where a Cursor account keeps its chats: `.cursor` in its stand-in home.
+fn cursor_root(endpoint: &SessionEndpoint) -> PathBuf {
+    match &endpoint.account {
+        Some(account) => account.home().join(".cursor"),
+        None => util::paths::home_dir().join(".cursor"),
+    }
+}
+
+/// Cursor keeps two stores for the same chats: the CLI's
+/// (`chats/<md5 of the cwd>/<id>/store.db`), which txcript reads and writes,
+/// and its ACP agent's (`acp-sessions/<id>/store.db` plus a `meta.json` with
+/// the cwd), which is what Zed's Cursor chats use. A chat is moved between
+/// them as a consistent SQLite copy, as Superset does.
+mod cursor_store {
+    use std::path::{Path, PathBuf};
+
+    use anyhow::{Context as _, Result, bail};
+    use md5::{Digest as _, Md5};
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct AcpMeta {
+        schema_version: u32,
+        cwd: String,
+        #[serde(flatten)]
+        rest: serde_json::Map<String, serde_json::Value>,
+    }
+
+    pub(super) fn cli_dir(root: &Path, cwd: &str, session_id: &str) -> PathBuf {
+        let hash = Md5::digest(cwd.as_bytes());
+        let hash: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
+        root.join("chats").join(hash).join(session_id)
+    }
+
+    fn acp_dir(root: &Path, session_id: &str) -> Result<PathBuf> {
+        // The id becomes a path segment.
+        if session_id.is_empty()
+            || !session_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-')
+        {
+            bail!("unexpected Cursor session id {session_id:?}");
+        }
+        Ok(root.join("acp-sessions").join(session_id))
+    }
+
+    pub(super) fn copy_acp_session_to_cli(root: &Path, session_id: &str) -> Result<()> {
+        let source = acp_dir(root, session_id)?;
+        let meta: AcpMeta = serde_json::from_str(
+            &std::fs::read_to_string(source.join("meta.json")).context("reading meta.json")?,
+        )
+        .context("parsing meta.json")?;
+        copy_store(&source, &cli_dir(root, &meta.cwd, session_id))
+    }
+
+    pub(super) fn copy_cli_session_to_acp(
+        root: &Path,
+        session_id: &str,
+        cwd: &Path,
+        cli_session_dir: Option<PathBuf>,
+    ) -> Result<()> {
+        let cwd = cwd.to_string_lossy();
+        let target = acp_dir(root, session_id)?;
+        let source = cli_session_dir.unwrap_or_else(|| cli_dir(root, &cwd, session_id));
+        copy_store(&source, &target)?;
+        let meta = AcpMeta {
+            schema_version: 1,
+            cwd: cwd.into_owned(),
+            rest: Default::default(),
+        };
+        std::fs::write(target.join("meta.json"), serde_json::to_string(&meta)?)
+            .context("writing meta.json")
+    }
+
+    /// Replaces `target/store.db` with a copy of `source/store.db` that
+    /// includes what is still in its write-ahead log.
+    fn copy_store(source: &Path, target: &Path) -> Result<()> {
+        let source_db = source.join("store.db");
+        if !source_db.is_file() {
+            bail!("{} does not exist", source_db.display());
+        }
+        std::fs::create_dir_all(target)?;
+        let staging = tempfile::Builder::new()
+            .prefix(".zed-store-")
+            .tempdir_in(target)?;
+        let copy = staging.path().join("store.db");
+        let connection = sqlez::connection::Connection::open_file(&source_db.to_string_lossy());
+        connection.exec_bound::<String>("VACUUM INTO ?")?(copy.to_string_lossy().into_owned())?;
+        drop(connection);
+        // A stale log next to the replaced file would be replayed onto it.
+        for suffix in ["store.db-wal", "store.db-shm"] {
+            let path = target.join(suffix);
+            if path.exists() {
+                std::fs::remove_file(&path)?;
+            }
+        }
+        std::fs::rename(&copy, target.join("store.db"))?;
+        Ok(())
+    }
 }
 
 fn step_env(
@@ -178,6 +333,46 @@ fn is_session_id(token: &str) -> bool {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn copies_cursor_chats_between_its_stores() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let session_id = "63d4050a-44d9-4e84-badf-b0ea3de8ac9f";
+        let cwd = Path::new("/test/repository");
+        let cli = cursor_store::cli_dir(root, "/test/repository", session_id);
+        std::fs::create_dir_all(&cli).unwrap();
+        {
+            let connection =
+                sqlez::connection::Connection::open_file(&cli.join("store.db").to_string_lossy());
+            connection
+                .exec("CREATE TABLE meta(key TEXT, value TEXT)")
+                .unwrap()()
+            .unwrap();
+            connection
+                .exec("INSERT INTO meta VALUES ('name', 'conversation')")
+                .unwrap()()
+            .unwrap();
+        }
+
+        cursor_store::copy_cli_session_to_acp(root, session_id, cwd, None).unwrap();
+        let acp = root.join("acp-sessions").join(session_id);
+        assert_eq!(
+            std::fs::read_to_string(acp.join("meta.json")).unwrap(),
+            r#"{"schemaVersion":1,"cwd":"/test/repository"}"#
+        );
+
+        std::fs::remove_dir_all(&cli).unwrap();
+        cursor_store::copy_acp_session_to_cli(root, session_id).unwrap();
+        let connection =
+            sqlez::connection::Connection::open_file(&cli.join("store.db").to_string_lossy());
+        let names = connection
+            .select::<String>("SELECT value FROM meta")
+            .unwrap()()
+        .unwrap();
+        assert_eq!(names, vec!["conversation".to_string()]);
+        assert!(cursor_store::copy_acp_session_to_cli(root, "../escape").is_err());
+    }
 
     #[test]
     fn parses_the_new_session_id() {
