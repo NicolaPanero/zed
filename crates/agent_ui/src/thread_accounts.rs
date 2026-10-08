@@ -9,7 +9,7 @@ use agent_accounts::AccountId;
 use anyhow::Context as _;
 use collections::HashMap;
 use db::kvp::KeyValueStore;
-use gpui::{App, AppContext as _, Global, SharedString, Task, TaskExt as _};
+use gpui::{App, AppContext as _, Global, Task, TaskExt as _};
 use project::AgentId;
 use serde::{Deserialize, Serialize};
 use util::ResultExt as _;
@@ -27,9 +27,6 @@ pub struct ThreadAccountInfo {
     /// The agent the conversation was last moved from.
     #[serde(default)]
     pub handoff_from: Option<HandoffSource>,
-    /// Every agent the conversation was moved from, oldest first.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub earlier_agents: Vec<HandoffSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -42,34 +39,12 @@ pub struct HandoffSource {
     pub account: Option<AccountId>,
 }
 
-impl HandoffSource {
-    pub fn agent(&self) -> Agent {
-        Agent::with_account(self.agent_id.clone(), self.account.clone())
-    }
-}
-
 /// What was last written in this session, so that reads right after a write
 /// don't race the background persistence.
 #[derive(Default)]
 struct RecentWrites(HashMap<ThreadId, ThreadAccountInfo>);
 
 impl Global for RecentWrites {}
-
-/// The agents a thread's conversation went through before its current one,
-/// such as "from Claude Code → Codex".
-pub fn handoff_label(thread_id: ThreadId, cx: &App) -> Option<SharedString> {
-    let info = read(thread_id, cx)?;
-    let mut sources = info.earlier_agents;
-    if sources.is_empty() {
-        sources.extend(info.handoff_from);
-    }
-    let mut labels: Vec<String> = sources
-        .iter()
-        .map(|source| crate::agent_panel::thread_handoff::target_label(&source.agent(), cx))
-        .collect();
-    labels.dedup();
-    (!labels.is_empty()).then(|| format!("from {}", labels.join(" → ")).into())
-}
 
 /// Records that a thread's conversation moved from `source` to an agent run
 /// with `account`, in the same thread.
@@ -79,15 +54,10 @@ pub(crate) fn record_switch(
     account: Option<AccountId>,
     cx: &mut App,
 ) -> Task<anyhow::Result<()>> {
-    let mut info = read(thread_id, cx).unwrap_or_default();
-    if info.earlier_agents.is_empty() {
-        // Threads continued before switches stayed in place name only
-        // their last source.
-        info.earlier_agents.extend(info.handoff_from.take());
-    }
-    info.earlier_agents.push(source.clone());
-    info.handoff_from = Some(source);
-    info.account = account;
+    let info = ThreadAccountInfo {
+        account,
+        handoff_from: Some(source),
+    };
     write(thread_id, &info, cx)
 }
 
@@ -359,30 +329,6 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn switches_keep_the_agents_a_thread_went_through(cx: &mut TestAppContext) {
-        init(cx);
-        let thread_id = ThreadId::new();
-        let source = |agent_id: &str| HandoffSource {
-            thread_id: thread_id.to_key_string(),
-            agent_id: AgentId::new(agent_id),
-            account: None,
-        };
-        cx.update(|cx| record_switch(thread_id, source("claude-acp"), None, cx).detach());
-        cx.run_until_parked();
-        cx.update(|cx| record_switch(thread_id, source("codex-acp"), None, cx).detach());
-        forget_recent_writes(cx);
-        cx.update(|cx| {
-            assert_eq!(
-                handoff_label(thread_id, cx).as_deref(),
-                Some("from Claude Code → Codex")
-            );
-            let info = read(thread_id, cx).unwrap();
-            assert_eq!(info.handoff_from, Some(source("codex-acp")));
-            assert_eq!(info.earlier_agents.len(), 2);
-        });
-    }
-
-    #[gpui::test]
     async fn recording_the_account_keeps_the_handoff_source(cx: &mut TestAppContext) {
         init(cx);
         let thread_id = ThreadId::new();
@@ -398,7 +344,6 @@ mod tests {
                 &ThreadAccountInfo {
                     account: Some(account.clone()),
                     handoff_from: Some(source.clone()),
-                    earlier_agents: Vec::new(),
                 },
                 cx,
             )
@@ -414,7 +359,6 @@ mod tests {
                 Some(ThreadAccountInfo {
                     account: Some(account),
                     handoff_from: Some(source),
-                    earlier_agents: Vec::new(),
                 })
             );
         });

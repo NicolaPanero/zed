@@ -46,7 +46,6 @@ pub struct ThreadItem {
     title_generating: bool,
     highlight_positions: Vec<usize>,
     timestamp: SharedString,
-    handoff_from: Option<SharedString>,
     notified: bool,
     status: AgentThreadStatus,
     selected: bool,
@@ -82,7 +81,6 @@ impl ThreadItem {
             title_generating: false,
             highlight_positions: Vec::new(),
             timestamp: "".into(),
-            handoff_from: None,
             notified: false,
             status: AgentThreadStatus::default(),
             selected: false,
@@ -106,13 +104,6 @@ impl ThreadItem {
 
     pub fn timestamp(mut self, timestamp: impl Into<SharedString>) -> Self {
         self.timestamp = timestamp.into();
-        self
-    }
-
-    /// The agents the thread's conversation went through, shown as its
-    /// tooltip, e.g. "from Claude Code → Codex".
-    pub fn handoff_from(mut self, label: impl Into<SharedString>) -> Self {
-        self.handoff_from = Some(label.into());
         self
     }
 
@@ -615,10 +606,6 @@ impl RenderOnce for ThreadItem {
                         }),
                 )
             })
-            .when_some(
-                self.handoff_from.filter(|_| !show_tooltip),
-                |this, label| this.tooltip(Tooltip::text(label)),
-            )
             .when(show_tooltip, |this| {
                 let status = self.status;
                 this.tooltip(Tooltip::element(move |_, _| match status {
