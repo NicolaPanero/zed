@@ -32,6 +32,10 @@ This is [NicolaPanero/zed](https://github.com/NicolaPanero/zed), a fork of Zed's
 - The conversation stays in the same thread: the panel and the sidebar entry switch to the new agent, and a notice at the top of the thread names the agent it came from. The old agent's session is deleted from its store once the new one is written, since it would only be a stale copy.
 - With the transcript fallback the transcript is sent right away, and the old session is kept: it is the only native copy of the conversation.
 
+### Find Chat…
+
+The agent panel's "+" menu (or `agent: find chat`) searches this project's chats that were started outside Zed — in Superset, a terminal or another editor — with any agent and account, and opens the chosen one as a thread that continues the conversation; nothing else is imported. It lists the 60 most recently active chats per account in the project's folder and in every worktree of its git repository (Superset runs agents in worktrees under `~/.superset/worktrees`), showing each one's title or first prompt. Chats already in Zed are left out. It needs the txcript bundled with this fork's builds (`txcript list --json`).
+
 ### Quota and usage
 
 - **Quota.** The account picker and menus show each account's quota (session and weekly windows for Claude and Codex, weekly for Grok, and for OpenCode those of the Anthropic and OpenAI subscriptions it is signed in to), refreshed at most every 5 minutes.

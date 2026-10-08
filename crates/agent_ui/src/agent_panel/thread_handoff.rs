@@ -563,6 +563,7 @@ pub struct NewThreadWithAccount {
 
 pub(crate) fn register(workspace: &mut Workspace) {
     crate::add_account_modal::register(workspace);
+    crate::external_chats::register(workspace);
     workspace
         .register_action(|workspace, action: &ContinueThreadWith, window, cx| {
             if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
@@ -658,6 +659,15 @@ pub(super) fn account_menu_entries(
     if !is_local_project {
         return menu;
     }
+    menu = menu.separator().item(
+        ContextMenuEntry::new("Find Chat…")
+            .icon(IconName::MagnifyingGlass)
+            .icon_color(Color::Muted)
+            .disabled(is_via_collab)
+            .handler(|window, cx| {
+                window.dispatch_action(Box::new(crate::external_chats::FindChat), cx)
+            }),
+    );
     let store = agent_server_store.read(cx);
     let registry_store = project::AgentRegistryStore::try_global(cx);
     let mut agents: Vec<(AgentId, SharedString, Option<SharedString>)> = store

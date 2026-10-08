@@ -41,6 +41,7 @@ mod unicode_confusables;
 mod account_registry;
 mod account_selector;
 mod add_account_modal;
+mod external_chats;
 mod fork_update;
 pub mod thread_accounts;
 mod usage_view;

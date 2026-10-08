@@ -144,7 +144,7 @@ async fn ensure_cursor_support(txcript: &Path, request: &TransferRequest) -> Res
 }
 
 /// Where a Cursor account keeps its chats: `.cursor` in its stand-in home.
-fn cursor_root(endpoint: &SessionEndpoint) -> PathBuf {
+pub(crate) fn cursor_root(endpoint: &SessionEndpoint) -> PathBuf {
     match &endpoint.account {
         Some(account) => account.home().join(".cursor"),
         None => util::paths::home_dir().join(".cursor"),
@@ -156,7 +156,7 @@ fn cursor_root(endpoint: &SessionEndpoint) -> PathBuf {
 /// and its ACP agent's (`acp-sessions/<id>/store.db` plus a `meta.json` with
 /// the cwd), which is what Zed's Cursor chats use. A chat is moved between
 /// them as a consistent SQLite copy, as Superset does.
-mod cursor_store {
+pub(crate) mod cursor_store {
     use std::path::{Path, PathBuf};
 
     use anyhow::{Context as _, Result, bail};
@@ -172,13 +172,13 @@ mod cursor_store {
         rest: serde_json::Map<String, serde_json::Value>,
     }
 
-    pub(super) fn cli_dir(root: &Path, cwd: &str, session_id: &str) -> PathBuf {
+    pub(crate) fn cli_dir(root: &Path, cwd: &str, session_id: &str) -> PathBuf {
         let hash = Md5::digest(cwd.as_bytes());
         let hash: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
         root.join("chats").join(hash).join(session_id)
     }
 
-    fn acp_dir(root: &Path, session_id: &str) -> Result<PathBuf> {
+    pub(crate) fn acp_dir(root: &Path, session_id: &str) -> Result<PathBuf> {
         // The id becomes a path segment.
         if session_id.is_empty()
             || !session_id
@@ -199,7 +199,7 @@ mod cursor_store {
         copy_store(&source, &cli_dir(root, &meta.cwd, session_id))
     }
 
-    pub(super) fn copy_cli_session_to_acp(
+    pub(crate) fn copy_cli_session_to_acp(
         root: &Path,
         session_id: &str,
         cwd: &Path,
@@ -245,7 +245,7 @@ mod cursor_store {
     }
 }
 
-fn step_env(
+pub(crate) fn step_env(
     shell_env: &HashMap<String, String>,
     endpoint: &SessionEndpoint,
 ) -> HashMap<String, String> {
@@ -257,7 +257,7 @@ fn step_env(
 }
 
 /// Runs one txcript step and returns its combined output.
-async fn run_step(
+pub(crate) async fn run_step(
     program: &Path,
     args: &[&std::ffi::OsStr],
     cwd: &Path,
@@ -279,7 +279,7 @@ async fn run_step(
     Ok(text)
 }
 
-fn find_txcript(shell_env: &HashMap<String, String>) -> Option<PathBuf> {
+pub(crate) fn find_txcript(shell_env: &HashMap<String, String>) -> Option<PathBuf> {
     // Release builds of this fork ship it next to the app's executable.
     let mut dirs: Vec<PathBuf> = std::env::current_exe()
         .ok()
