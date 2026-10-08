@@ -2856,11 +2856,12 @@
     },
     "auto_install_extensions": { "vscode-icons": true },
     "buffer_font_family": "Menlo",
-    // VS Code's sizes (12/13) are a little small next to Zed's denser UI.
-    "buffer_font_size": 13,
+    // Sized like the Claude desktop app's text (code 14, chat 16) rather
+    // than VS Code's 12/13, which read small next to Zed's denser UI.
+    "buffer_font_size": 14,
     "buffer_line_height": { "custom": 1.5 },
     "ui_font_family": ".SystemUIFont",
-    "ui_font_size": 14,
+    "ui_font_size": 15,
     "minimap": { "show": "always" },
     "current_line_highlight": "line",
     "colorize_brackets": true,
@@ -2868,7 +2869,7 @@
     // The terminal otherwise follows the editor's font and size.
     "terminal": {
       "font_family": "Menlo",
-      "font_size": 13,
+      "font_size": 14,
     },
     "tabs": {
       "file_icons": true,
@@ -2886,7 +2887,8 @@
     "outline_panel": { "dock": "left" },
     "git_panel": { "dock": "left" },
     "agent": { "dock": "right" },
-    "agent_buffer_font_size": 13,
+    "agent_ui_font_size": 16,
+    "agent_buffer_font_size": 14,
   },
   // Settings overrides to use when using Zed Nightly.
   // Mostly useful for developers who are managing multiple instances of Zed.
