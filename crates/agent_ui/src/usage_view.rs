@@ -978,7 +978,7 @@ fn login_command(account: &AgentAccount) -> String {
     }
 }
 
-fn provider_icon(provider: AccountProvider) -> IconName {
+pub(crate) fn provider_icon(provider: AccountProvider) -> IconName {
     match provider {
         AccountProvider::Claude => IconName::AiClaude,
         AccountProvider::Codex => IconName::AiOpenAi,
@@ -1058,8 +1058,10 @@ fn confirm_remove(account: AgentAccount, window: &mut Window, cx: &mut App) {
         PromptLevel::Warning,
         &format!("Remove {}?", account.label()),
         Some(&format!(
-            "{} moves to the Trash, with this account's login and history.",
-            account.home_label
+            "{} moves to the Trash, with this account's login and history. Other apps \
+             that use it, such as Superset or the {} CLI, lose it too.",
+            account.home_label,
+            account.provider.display_name()
         )),
         &["Move to Trash", "Cancel"],
         cx,

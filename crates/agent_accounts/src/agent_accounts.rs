@@ -8,6 +8,7 @@
 //! are never read here.
 
 mod discovery;
+pub mod external_sessions;
 pub mod handoff;
 pub mod quota;
 pub mod usage_history;
@@ -156,6 +157,13 @@ impl AccountProvider {
             Self::Cursor => "cursor",
             Self::OpenCode => "opencode",
         }
+    }
+
+    /// The provider whose sessions txcript lists under `harness`.
+    pub fn for_harness(harness: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|provider| provider.harness() == harness)
     }
 
     /// Whether a session txcript writes for this provider loads through the
