@@ -279,6 +279,10 @@ pub struct AcpConnection {
     child: Option<Child>,
     session_list: Option<Rc<AcpSessionList>>,
     debug_log: AcpDebugLog,
+    /// Environment that wins over everything else for this agent's processes,
+    /// such as the home directory of the selected account. Login terminals
+    /// get it too, so that signing in lands in the same account.
+    env_overrides: HashMap<String, String>,
     _settings_subscription: Subscription,
     _io_task: Task<()>,
     dispatch_tx: mpsc::UnboundedSender<ForegroundWork>,
@@ -517,18 +521,27 @@ pub async fn connect(
     agent_server_store: WeakEntity<AgentServerStore>,
     default_mode: Option<acp::SessionModeId>,
     default_config_options: HashMap<String, AgentConfigOptionValue>,
+    env_overrides: HashMap<String, String>,
     cx: &mut AsyncApp,
 ) -> Result<Rc<dyn AgentConnection>> {
-    let conn = AcpConnection::stdio(
+    let mut command = command;
+    if !env_overrides.is_empty() {
+        command
+            .env
+            .get_or_insert_default()
+            .extend(env_overrides.clone());
+    }
+    let mut conn = AcpConnection::stdio(
         agent_id,
         project,
-        command.clone(),
+        command,
         agent_server_store,
         default_mode,
         default_config_options,
         cx,
     )
     .await?;
+    conn.env_overrides = env_overrides;
     Ok(Rc::new(conn) as _)
 }
 
@@ -921,6 +934,7 @@ impl AcpConnection {
             defaults,
             session_list,
             debug_log,
+            env_overrides: HashMap::default(),
             _settings_subscription: settings_subscription,
             _io_task: io_task,
             dispatch_tx,
@@ -966,6 +980,7 @@ impl AcpConnection {
             child: None,
             session_list: None,
             debug_log: AcpDebugLog::default(),
+            env_overrides: HashMap::default(),
             _settings_subscription: settings_subscription,
             _io_task: io_task,
             dispatch_tx,
@@ -1777,6 +1792,7 @@ impl AgentConnection for AcpConnection {
                 let agent_id = self.id.clone();
                 let terminal = terminal.clone();
                 let store = self.agent_server_store.clone();
+                let env_overrides = self.env_overrides.clone();
                 Some(cx.spawn(async move |cx| {
                     let command = store
                         .update(cx, |store, cx| {
@@ -1791,11 +1807,18 @@ impl AgentConnection for AcpConnection {
                         })?
                         .context("Failed to get agent command")?
                         .await?;
-                    Ok(terminal_auth_task(&command, &agent_id, &terminal))
+                    Ok(crate::account_env::with_env_overrides(
+                        terminal_auth_task(&command, &agent_id, &terminal),
+                        &env_overrides,
+                    ))
                 }))
             }
-            _ => meta_terminal_auth_task(&self.id, method_id, method)
-                .map(|task| Task::ready(Ok(task))),
+            _ => meta_terminal_auth_task(&self.id, method_id, method).map(|task| {
+                Task::ready(Ok(crate::account_env::with_env_overrides(
+                    task,
+                    &self.env_overrides,
+                )))
+            }),
         }
     }
 

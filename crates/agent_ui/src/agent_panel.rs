@@ -359,9 +359,12 @@ struct SerializedActiveThread {
     work_dirs: Option<SerializedPathList>,
 }
 
+pub(crate) mod thread_handoff;
+
 pub fn init(cx: &mut App) {
     cx.observe_new(
         |workspace: &mut Workspace, _window, _cx: &mut Context<Workspace>| {
+            thread_handoff::register(workspace);
             workspace
                 .register_action(|workspace, _: &NewThread, window, cx| {
                     if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
@@ -1117,6 +1120,7 @@ pub struct AgentPanel {
     retained_threads: HashMap<ThreadId, Entity<ConversationView>>,
     terminals: HashMap<TerminalId, AgentTerminal>,
     pending_terminal_spawn: Option<TerminalId>,
+    pending_handoff: Option<Task<()>>,
     #[cfg(test)]
     test_terminal_spawn_gate: Option<futures::channel::oneshot::Receiver<()>>,
     new_thread_menu_handle: PopoverMenuHandle<ContextMenu>,
@@ -1538,6 +1542,7 @@ impl AgentPanel {
             retained_threads: HashMap::default(),
             terminals: HashMap::default(),
             pending_terminal_spawn: None,
+            pending_handoff: None,
             #[cfg(test)]
             test_terminal_spawn_gate: None,
             new_thread_menu_handle: PopoverMenuHandle::default(),
@@ -1628,7 +1633,7 @@ impl AgentPanel {
     }
 
     fn should_restore_agent(&self, agent: &Agent, cx: &App) -> bool {
-        let Agent::Custom { id } = agent else {
+        let (Agent::Custom { id } | Agent::CustomAccount { id, .. }) = agent else {
             return true;
         };
 
@@ -1914,7 +1919,7 @@ impl AgentPanel {
             return;
         }
 
-        self.selected_agent = action.agent.clone().into();
+        self.selected_agent = self.agent_for_new_thread(action.agent.clone().into(), cx);
         self.activate_new_thread(true, AgentThreadSource::AgentPanel, window, cx);
     }
 
@@ -2107,8 +2112,9 @@ impl AgentPanel {
             });
         }
 
+        let account_env = self.pending_terminal_account_env(cx);
         self.project.update(cx, |project, cx| {
-            project.create_terminal_shell(working_directory, cx)
+            project.create_terminal_shell_with_env(working_directory, account_env, cx)
         })
     }
 
@@ -4549,6 +4555,7 @@ impl AgentPanel {
             ThreadMetadataStore::try_global(cx)
                 .and_then(|store| store.read(cx).entry(tid).and_then(|m| m.session_id.clone()))
         });
+        let agent = crate::thread_accounts::agent_for_resume(agent, resume_thread_id, cx);
         self.create_agent_thread_inner(
             agent,
             server_override,
@@ -4618,6 +4625,7 @@ impl AgentPanel {
         let project = self.project.clone();
 
         self.set_selected_agent_and_persist(agent.clone(), cx);
+        crate::thread_accounts::record_account(thread_id, agent.account().cloned(), cx);
 
         let server = server_override
             .unwrap_or_else(|| agent.server(self.fs.clone(), self.thread_store.clone()));
@@ -5789,6 +5797,7 @@ impl AgentPanel {
 
                         menu = menu
                             .action("Settings", Box::new(OpenSettings))
+                            .action("Accounts & Usage", Box::new(crate::OpenAgentUsage))
                             .separator()
                             .action("Toggle Threads Sidebar", Box::new(ToggleWorkspaceSidebar));
 
@@ -5848,13 +5857,16 @@ impl AgentPanel {
 
         let (selected_agent_custom_icon, selected_agent_label) = if showing_terminal {
             (None, SharedString::from("Terminal"))
-        } else if let Agent::Custom { id, .. } = &self.selected_agent {
+        } else if let Agent::Custom { id, .. } | Agent::CustomAccount { id, .. } =
+            &self.selected_agent
+        {
             let store = agent_server_store.read(cx);
             let icon = store.agent_icon(&id);
 
             let label = store
                 .agent_display_name(&id)
                 .unwrap_or_else(|| self.selected_agent.label());
+            let label = thread_handoff::label_with_account(label, &self.selected_agent, cx);
             (icon, label)
         } else {
             (None, self.selected_agent.label())
@@ -5877,6 +5889,7 @@ impl AgentPanel {
             let agent_server_store = agent_server_store;
 
             Rc::new(move |window, cx| {
+                crate::account_registry::refresh_for_menu(cx);
                 Some(ContextMenu::build(window, cx, |menu, _window, cx| {
                     menu.context(focus_handle.clone())
                         .item(
@@ -6030,6 +6043,15 @@ impl AgentPanel {
                             }
 
                             menu
+                        })
+                        .map(|menu| {
+                            thread_handoff::account_menu_entries(
+                                menu,
+                                &workspace,
+                                &agent_server_store,
+                                is_via_collab,
+                                cx,
+                            )
                         })
                         .separator()
                         .item(
@@ -7322,6 +7344,42 @@ mod tests {
                 "focus should stay within the agent panel after resubmitting"
             );
         });
+    }
+
+    #[gpui::test]
+    async fn test_continue_thread_with_runs_inside_a_workspace_update(cx: &mut TestAppContext) {
+        // Actions reach the panel while the workspace is being updated; the
+        // hand-off's messages must not update the workspace re-entrantly.
+        init_test(cx);
+        cx.update(|cx| {
+            agent::ThreadStore::init_global(cx);
+            language_model::LanguageModelRegistry::test(cx);
+            crate::account_registry::AgentAccountsSettings::register(cx);
+        });
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let multi_workspace =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace
+            .read_with(cx, |multi_workspace, _cx| {
+                multi_workspace.workspace().clone()
+            })
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(multi_workspace.into(), cx);
+        let connection = StubAgentConnection::new();
+        let panel = workspace.update_in(cx, |workspace, window, cx| {
+            let panel = cx.new(|cx| AgentPanel::new(workspace, window, cx));
+            workspace.add_panel(panel.clone(), window, cx);
+            panel
+        });
+        open_thread_with_connection(&panel, connection, cx);
+
+        workspace.update_in(cx, |_workspace, window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.continue_thread_with(AgentId::new("codex-acp"), None, window, cx)
+            });
+        });
+        cx.run_until_parked();
     }
 
     #[gpui::test]

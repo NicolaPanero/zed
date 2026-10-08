@@ -2855,6 +2855,55 @@
   // Mostly useful for developers who are managing multiple instances of Zed.
   "preview": {
     // "theme": "Andromeda"
+    // This fork's builds run as Preview; these defaults make them feel like
+    // Visual Studio Code. Anything in your own settings still wins.
+    "theme": {
+      "mode": "system",
+      "light": "VS Code Light Modern",
+      "dark": "VS Code Dark Modern",
+    },
+    "base_keymap": "VSCode",
+    // The vscode-icons team's official Zed extension.
+    "icon_theme": {
+      "mode": "system",
+      "light": "VSCode Icons for Zed (Light)",
+      "dark": "VSCode Icons for Zed (Dark)",
+    },
+    "auto_install_extensions": { "vscode-icons": true },
+    "buffer_font_family": "Menlo",
+    // Sized like the Claude desktop app's text (code 14, chat 16) rather
+    // than VS Code's 12/13, which read small next to Zed's denser UI.
+    "buffer_font_size": 14,
+    "buffer_line_height": { "custom": 1.5 },
+    "ui_font_family": ".SystemUIFont",
+    "ui_font_size": 15,
+    "minimap": { "show": "always" },
+    "current_line_highlight": "line",
+    "colorize_brackets": true,
+    "sticky_scroll": { "enabled": true },
+    // The terminal otherwise follows the editor's font and size.
+    "terminal": {
+      "font_family": "Menlo",
+      "font_size": 14,
+    },
+    "tabs": {
+      "file_icons": true,
+      "git_status": true,
+      "show_diagnostics": "all",
+    },
+    // VS Code's layout: files, outline and source control on the left, the
+    // AI chat on the right.
+    "project_panel": {
+      "dock": "left",
+      "entry_spacing": "standard",
+      "folder_indicator": "chevron",
+      "indent_size": 12,
+    },
+    "outline_panel": { "dock": "left" },
+    "git_panel": { "dock": "left" },
+    "agent": { "dock": "right" },
+    "agent_ui_font_size": 16,
+    "agent_buffer_font_size": 14,
   },
   // Settings overrides to use when using Zed Nightly.
   // Mostly useful for developers who are managing multiple instances of Zed.

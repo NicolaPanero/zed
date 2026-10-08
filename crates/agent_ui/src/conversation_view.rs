@@ -661,6 +661,11 @@ pub struct ConversationView {
 }
 
 impl ConversationView {
+    /// The agent this view talks to, including the account it runs with.
+    pub(crate) fn connection_key(&self) -> &Agent {
+        &self.connection_key
+    }
+
     pub fn has_auth_methods(&self) -> bool {
         self.as_connected().map_or(false, |connected| {
             !connected.connection.auth_methods().is_empty()

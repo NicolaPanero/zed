@@ -214,10 +214,12 @@ impl Transformable for Icon {
 
 impl RenderOnce for Icon {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        // This fork draws UI icons a little larger, closer to VS Code's.
+        let ui_size = Rems(self.size.0 * 1.15);
         match self.source {
             IconSource::Embedded(path) => svg()
                 .with_transformation(self.transformation)
-                .size(self.size)
+                .size(ui_size)
                 .flex_none()
                 .path(path)
                 .text_color(self.color.color(cx))
@@ -225,7 +227,7 @@ impl RenderOnce for Icon {
             IconSource::ExternalSvg(path) => svg()
                 .external_path(path)
                 .with_transformation(self.transformation)
-                .size(self.size)
+                .size(ui_size)
                 .flex_none()
                 .text_color(self.color.color(cx))
                 .into_any_element(),

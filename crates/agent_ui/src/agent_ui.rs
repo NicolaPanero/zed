@@ -37,6 +37,16 @@ pub mod threads_archive_view;
 mod ui;
 mod unicode_confusables;
 
+// This fork's agent accounts and "Continue with…".
+mod account_registry;
+mod account_selector;
+mod add_account_modal;
+mod external_chats;
+mod fork_update;
+pub mod thread_accounts;
+mod usage_view;
+pub use usage_view::OpenAgentUsage;
+
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -405,6 +415,7 @@ where
     match AgentIdOrLegacyAgent::deserialize(deserializer)? {
         AgentIdOrLegacyAgent::AgentId(agent_id) => Ok(agent_id),
         AgentIdOrLegacyAgent::LegacyAgent(Agent::Custom { id }) => Ok(id),
+        AgentIdOrLegacyAgent::LegacyAgent(Agent::CustomAccount { id, .. }) => Ok(id),
         AgentIdOrLegacyAgent::LegacyAgent(Agent::NativeAgent) => Ok(Agent::NativeAgent.id()),
         #[cfg(any(test, feature = "test-support"))]
         AgentIdOrLegacyAgent::LegacyAgent(Agent::Stub) => Ok(Agent::Stub.id()),
@@ -430,6 +441,13 @@ pub enum Agent {
         #[serde(rename = "name")]
         id: AgentId,
     },
+    /// An external agent run with one of its non-default accounts; `Custom`
+    /// runs the agent's default account.
+    CustomAccount {
+        #[serde(rename = "name")]
+        id: AgentId,
+        account: agent_accounts::AccountId,
+    },
     #[cfg(any(test, feature = "test-support"))]
     Stub,
 }
@@ -452,6 +470,7 @@ impl Agent {
         match self {
             Self::NativeAgent => agent::ZED_AGENT_ID.clone(),
             Self::Custom { id } => id.clone(),
+            Self::CustomAccount { id, .. } => id.clone(),
             #[cfg(any(test, feature = "test-support"))]
             Self::Stub => "stub".into(),
         }
@@ -465,6 +484,7 @@ impl Agent {
         match self {
             Self::NativeAgent => "Zed Agent".into(),
             Self::Custom { id, .. } => id.0.clone(),
+            Self::CustomAccount { id, .. } => id.0.clone(),
             #[cfg(any(test, feature = "test-support"))]
             Self::Stub => "Stub Agent".into(),
         }
@@ -474,6 +494,7 @@ impl Agent {
         match self {
             Self::NativeAgent => None,
             Self::Custom { .. } => Some(IconName::Sparkle),
+            Self::CustomAccount { .. } => Some(IconName::Sparkle),
             #[cfg(any(test, feature = "test-support"))]
             Self::Stub => None,
         }
@@ -489,6 +510,10 @@ impl Agent {
             Self::Custom { id: name } => {
                 Rc::new(agent_servers::CustomAgentServer::new(name.clone()))
             }
+            Self::CustomAccount { id, account } => Rc::new(
+                agent_servers::CustomAgentServer::new(id.clone())
+                    .with_account(Some(account.clone())),
+            ),
             #[cfg(any(test, feature = "test-support"))]
             Self::Stub => Rc::new(crate::test_support::StubAgentServer::default_response()),
         }
@@ -587,6 +612,9 @@ pub fn init(
 ) {
     agent::ThreadStore::init_global(cx);
     prompt_store::init(cx);
+    account_registry::AccountRegistry::init(cx);
+    usage_view::init(cx);
+    fork_update::init(cx);
 
     cx.set_global(agent_skills::SkillsUpdatedHook(std::rc::Rc::new(|cx| {
         let workspaces: Vec<_> = workspace::AppState::global(cx)

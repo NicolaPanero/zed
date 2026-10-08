@@ -2136,6 +2136,7 @@ impl ThreadView {
     ) {
         let error = error.into();
         self.emit_thread_error_telemetry(&error, cx);
+        crate::account_selector::note_thread_error(&error, &self.server_view, cx);
         self.thread_error = Some(error);
         cx.notify();
     }
@@ -4696,6 +4697,12 @@ impl ThreadView {
                                     .flex_wrap()
                                     .gap_1()
                                     .children(self.render_token_usage(cx))
+                                    .children(crate::account_selector::thread_account_selector(
+                                        &self.server_view,
+                                        &self.thread,
+                                        &self.project,
+                                        cx,
+                                    ))
                                     .children(self.profile_selector.clone())
                                     .map(|this| match self.config_options_view.clone() {
                                         Some(config_view) => this.child(config_view),
@@ -12629,6 +12636,13 @@ impl Render for ThreadView {
             .when(self.resumed_without_history, |this| {
                 this.child(Self::render_resume_notice(cx))
             })
+            .children(crate::account_selector::thread_notices(
+                &self.server_view,
+                &self.thread,
+                &self.project,
+                self.thread_error.as_ref(),
+                cx,
+            ))
             .map(|this| {
                 if has_messages {
                     this.flex_1()
