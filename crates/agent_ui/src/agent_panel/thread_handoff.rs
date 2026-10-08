@@ -718,47 +718,56 @@ pub(super) fn account_menu_entries(
         }
     }
 
-    for provider in AccountProvider::ALL {
-        let agent_id = provider.agent_id();
-        for account in AccountRegistry::accounts_for_agent(agent_id, cx) {
-            let Some(account_id) = account.id() else {
-                continue;
-            };
-            if !has_header {
-                menu = menu.separator().header("Accounts");
-                has_header = true;
-            }
-            let workspace = workspace.clone();
-            menu = menu.item(
-                ContextMenuEntry::new(format!(
-                    "Terminal · {} · {}",
-                    provider.display_name(),
-                    account.label()
-                ))
-                .icon(IconName::Terminal)
-                .icon_color(Color::Muted)
-                .disabled(is_via_collab)
-                .handler(move |window, cx| {
-                    let Some(workspace) = workspace.upgrade() else {
-                        return;
-                    };
-                    let account_id = account_id.clone();
-                    workspace.update(cx, |workspace, cx| {
-                        if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
-                            panel.update(cx, |panel, cx| {
-                                panel.new_terminal_with_account(
-                                    Some(workspace),
-                                    agent_id.into(),
-                                    account_id,
-                                    window,
-                                    cx,
-                                );
+    // Terminals with an account sit in a submenu, so the accounts list stays
+    // short.
+    let terminal_accounts: Vec<(AccountProvider, AccountId, String)> = AccountProvider::ALL
+        .into_iter()
+        .flat_map(|provider| {
+            AccountRegistry::accounts_for_agent(provider.agent_id(), cx)
+                .into_iter()
+                .filter_map(move |account| {
+                    Some((
+                        provider,
+                        account.id()?,
+                        format!("{} · {}", provider.display_name(), account.label()),
+                    ))
+                })
+        })
+        .collect();
+    if !terminal_accounts.is_empty() && !is_via_collab {
+        let workspace = workspace.clone();
+        menu = menu.submenu("Terminal with Account", move |mut menu, _, _| {
+            for (provider, account_id, label) in &terminal_accounts {
+                let workspace = workspace.clone();
+                let agent_id = provider.agent_id();
+                let account_id = account_id.clone();
+                menu = menu.item(
+                    ContextMenuEntry::new(label.clone())
+                        .icon(IconName::Terminal)
+                        .icon_color(Color::Muted)
+                        .handler(move |window, cx| {
+                            let Some(workspace) = workspace.upgrade() else {
+                                return;
+                            };
+                            let account_id = account_id.clone();
+                            workspace.update(cx, |workspace, cx| {
+                                if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                                    panel.update(cx, |panel, cx| {
+                                        panel.new_terminal_with_account(
+                                            Some(workspace),
+                                            agent_id.into(),
+                                            account_id,
+                                            window,
+                                            cx,
+                                        );
+                                    });
+                                }
                             });
-                        }
-                    });
-                }),
-            );
-        }
+                        }),
+                );
+            }
+            menu
+        });
     }
 
     if agents.is_empty() {
